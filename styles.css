@@ -1,0 +1,150 @@
+/* MuYun Companion · v0.1.0
+   H1 进度条 / H2 聚光灯 / H8 小地图 的样式层。
+   颜色走 Obsidian/主题 CSS 变量（--interactive-accent 等），MuYun 缺席时优雅降级。 */
+
+/* ── H1 顶部阅读进度条 ── */
+.muyun-progress {
+	position: fixed;
+	top: 0;
+	left: 0;
+	right: 0;
+	height: 4px;
+	z-index: 60;
+	pointer-events: none;
+	opacity: 0;
+	transition: opacity 0.2s ease;
+	background: var(--background-modifier-border, rgba(0, 0, 0, 0.12));
+}
+.muyun-progress.on { opacity: 1; }
+.muyun-progress-fill {
+	height: 100%;
+	width: 0;
+	background: linear-gradient(90deg, var(--text-accent, #b1aad8), var(--interactive-accent, #8a5cf5));
+	box-shadow: 0 0 6px var(--text-accent, #b1aad8);
+	border-radius: 0 2px 2px 0;
+	transition: width 0.1s linear;
+}
+
+/* ── H8 侧缘小地图点轨 ── */
+.view-content.muyun-has-rail { position: relative; }
+.muyun-rail {
+	position: absolute;
+	right: 5px;
+	top: 12%;
+	bottom: 12%;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: 9px;
+	z-index: 12;
+}
+.muyun-rail-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	border: 0;
+	padding: 0;
+	background: var(--text-muted, #999);
+	opacity: 0.35;
+	cursor: pointer;
+	transition: opacity 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.muyun-rail-dot.lvl1 { width: 10px; height: 10px; }
+.muyun-rail-dot:hover { opacity: 0.8; }
+.muyun-rail-dot.cur {
+	opacity: 1;
+	transform: scale(1.4);
+	background: var(--text-accent, #8a5cf5);
+	box-shadow: 0 0 0 3px var(--background-modifier-active-hover, rgba(0, 0, 0, 0.06));
+}
+
+/* ── H2 阅读聚光灯 ── */
+.markdown-preview-sizer > *, .markdown-preview-view > * { transition: opacity 0.25s ease; }
+.markdown-preview-view .muyun-dim { opacity: var(--muyun-dim, 0.35); }
+
+/* ── v0.2 新增：已读轨迹 / 悬停预览 / 状态栏 / 编辑态 / 读完柔光 ── */
+.muyun-rail-dot.read {
+	opacity: 0.75;
+	background: var(--text-normal, #ccc);
+}
+.muyun-rail-tip {
+	position: absolute;
+	right: 16px;
+	max-width: 260px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	background: var(--background-secondary, #20202a);
+	color: var(--text-normal, #ddd);
+	border: 1px solid var(--background-modifier-border, rgba(255, 255, 255, 0.1));
+	border-radius: 6px;
+	padding: 3px 9px;
+	font-size: 11.5px;
+	pointer-events: none;
+	z-index: 20;
+	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+}
+.status-bar .muyun-crumb {
+	color: var(--text-muted);
+	cursor: default;
+	max-width: 40vw;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.status-bar .muyun-crumb:hover { color: var(--text-normal); }
+.status-bar .muyun-readtime { color: var(--text-faint); cursor: default; }
+.status-bar .muyun-stats { color: var(--text-muted); cursor: default; }
+
+/* 编辑态段落聚焦（CM6 行装饰） */
+.cm-line { transition: opacity 0.2s ease; }
+.cm-line.muyun-focus-dim { opacity: 0.3; }
+
+/* 读完柔光（单次脉冲） */
+@keyframes muyun-finish-glow {
+	0% { box-shadow: 0 0 0 0 transparent; }
+	35% { box-shadow: 0 0 14px 3px var(--text-accent, #b1aad8); }
+	100% { box-shadow: 0 0 6px var(--text-accent, #b1aad8); }
+}
+.muyun-progress-fill.muyun-glow { animation: muyun-finish-glow 0.9s ease; }
+
+/* v0.4 移动端 / 窄屏：点轨与聚光灯让位（与主题 750px 断点一致） */
+@media (max-width: 750px) {
+	.muyun-rail { display: none; }
+	.markdown-preview-view .muyun-dim { opacity: 1; }
+}
+
+/* ── v0.5 阅读热图弹窗 ── */
+.muyun-heatmap-modal h3 { margin: 0 0 10px; }
+.muyun-heatmap {
+	display: grid;
+	grid-template-rows: repeat(7, 14px);
+	grid-auto-flow: column;
+	grid-auto-columns: 14px;
+	gap: 3px;
+	margin-bottom: 12px;
+}
+.muyun-heat-cell {
+	width: 14px;
+	height: 14px;
+	border-radius: 3px;
+	background: var(--text-accent, #8a5cf5);
+	opacity: 0.15;
+}
+.muyun-heat-cell.empty { background: var(--background-modifier-border); opacity: 1; }
+.muyun-heat-cell.l1 { opacity: 0.3; }
+.muyun-heat-cell.l2 { opacity: 0.5; }
+.muyun-heat-cell.l3 { opacity: 0.72; }
+.muyun-heat-cell.l4 { opacity: 1; }
+.muyun-heat-cell.future { background: transparent; opacity: 0; }
+.muyun-heat-side { font-size: 12.5px; color: var(--text-muted); line-height: 1.9; margin-bottom: 10px; }
+.muyun-heat-side .hm-big { font-size: 16px; font-weight: 600; color: var(--text-normal); }
+.muyun-heat-side .hm-top { margin-top: 4px; }
+.muyun-heat-legend {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 11px;
+	color: var(--text-faint);
+}
+.muyun-heat-legend .muyun-heat-cell { width: 11px; height: 11px; }
