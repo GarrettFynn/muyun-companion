@@ -148,3 +148,22 @@
 	color: var(--text-faint);
 }
 .muyun-heat-legend .muyun-heat-cell { width: 11px; height: 11px; }
+
+/* ── v0.6 进度条 H2 章节刻度 ── */
+.muyun-progress-ticks { position: absolute; inset: 0; pointer-events: none; }
+.muyun-progress-tick {
+	position: absolute;
+	top: 0;
+	width: 2px;
+	height: 100%;
+	background: var(--background-modifier-border, rgba(127, 127, 127, 0.4));
+	opacity: 0.9;
+}
+
+/* ── v0.6 面包屑可点击 ── */
+.muyun-crumb-seg { cursor: pointer; }
+.muyun-crumb-seg:hover { color: var(--text-accent, #8a5cf5); }
+.muyun-crumb-sep { color: var(--text-faint); cursor: default; }
+
+/* ── v0.6 每日目标达成标记 ── */
+.muyun-goal-done { color: var(--text-accent, #8a5cf5); }
