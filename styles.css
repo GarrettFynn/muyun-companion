@@ -183,3 +183,8 @@
 .muyun-q-x { border: none; background: none; color: var(--text-faint); cursor: pointer; font-size: 12px; padding: 2px 4px; flex: none; }
 .muyun-q-row:hover .muyun-q-x { color: var(--text-normal); }
 .muyun-streak-head { font-size: 15px; margin: 2px 0 8px; color: var(--text-accent, #8a5cf5); }
+
+/* ── v0.8 队列置顶按钮 ── */
+.muyun-q-pin { border: none; background: none; color: var(--text-faint); cursor: pointer; font-size: 11px; padding: 2px 3px; flex: none; opacity: .45; }
+.muyun-q-pin.on { opacity: 1; }
+.muyun-q-pin:hover { opacity: 1; }

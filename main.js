@@ -1,6 +1,6 @@
 'use strict';
 
-/* MuYun Companion · v0.7.0
+/* MuYun Companion · v0.8.0
    MuYun 慕云主题的配套增强插件，承载主题（纯 CSS）无法实现的效果：
    H1 顶部阅读进度条（H2 章节刻度）/ H2 阅读聚光灯（默认关）/ H8 侧缘小地图点轨 /
    续读记忆 + 继续阅读队列 / 状态栏标题面包屑（可点击跳转）与剩余阅读时长 /
@@ -14,6 +14,8 @@
    v0.6.1：面包屑折叠目标先展开再落点、进度条刻度悬停章节名、打字机锚点切换即时重锚。
    v0.7.0：P2 全家——队列/streak（当前+最佳）/统计六维（days 双态 {sec,sess,maxSess,hours}，
    超龄折入 months 月度归档不再丢弃）/周报导出（ISO 周号命名不覆盖）+ debugMode 热路径打点。
+   v0.8.0：用户反馈轮——已阅读时长（⏱ 本次·本篇累计，替代与进度条重复的剩余估算；未开统计退回估算）、
+   streak 移出状态栏（热图/周报保留）、队列升级（📌置顶 + 行内最近章节 + Ctrl 点击新窗格）。
    样式走 Obsidian 标准 CSS 变量并带兜底值，任意主题可用，MuYun 下观感最佳。 */
 
 const { Plugin, PluginSettingTab, Setting, MarkdownView, Modal, Notice, debounce } = require('obsidian');
@@ -302,7 +304,7 @@ class MuyunCompanionPlugin extends Plugin {
 			/* debugMode 门控打点（性能预算表实测；有意设计，勿修） */
 			const t0 = this.settings.debugMode ? performance.now() : 0;
 			this.updateProgress();
-			this.renderReadTime();
+			this.renderTimeStatus();
 			this.applySpotlight();
 			this.updateRail();
 			this.updateBreadcrumb();
@@ -362,12 +364,18 @@ class MuyunCompanionPlugin extends Plugin {
 			const rec = this.stats.notes[file.path] || (this.stats.notes[file.path] = { sec: 0, ts: 0 });
 			rec.sec += sec;
 			rec.ts = now;
+			/* v0.8 本篇会话时长：切笔记或间隔 >10min 时重新计「本次」 */
+			if (!this._noteSess) this._noteSess = { path: '', sec: 0 };
+			if (this._noteSess.path !== file.path) { this._noteSess.path = file.path; this._noteSess.sec = 0; }
+			else if (gap > STATS_SESS_GAP_MS) this._noteSess.sec = 0;
+			this._noteSess.sec += sec;
 		}
 		this.pruneStats(now);
 		/* v0.7 历史最佳 streak 顺带维护 */
 		const streak = this.calcStreak(now);
 		if (streak > this.stats.best) this.stats.best = streak;
 		this.updateStatsStatus();
+		this.renderTimeStatus();
 		this.checkGoal(key, now);
 		this.saveStatsSoon();
 	}
@@ -397,10 +405,8 @@ class MuyunCompanionPlugin extends Plugin {
 		const today = this.daySec(this.statsDateKey(Date.now()));
 		const min = Math.floor(today / 60);
 		const goal = this.settings.dailyGoalMin;
-		/* v0.7 streak 常驻：≥2 天才显示（D3：断签不提醒） */
-		const streak = this.calcStreak(Date.now());
-		const tail = streak >= 2 ? ' · 🔥' + streak : '';
-		this.statsEl.setText((goal > 0 ? ('📖 ' + min + '/' + goal + 'm' + (min >= goal ? ' ✓' : '')) : ('📖 ' + min + 'm')) + tail);
+		/* v0.8：streak 移出状态栏（用户反馈鸡肋）——热图弹窗与周报中保留 */
+		this.statsEl.setText(goal > 0 ? ('📖 ' + min + '/' + goal + 'm' + (min >= goal ? ' ✓' : '')) : ('📖 ' + min + 'm'));
 		this.statsEl.classList.toggle('muyun-goal-done', goal > 0 && min >= goal);
 	}
 
@@ -1066,6 +1072,7 @@ class MuyunCompanionPlugin extends Plugin {
 		if (max > 4) rec.ratio = Math.min(1, Math.max(0, el.scrollTop / max));
 		rec.ts = Date.now();
 		if (typeof this.railMaxRead === 'number' && this.railMaxRead >= 0) rec.readIdx = this.railMaxRead;
+		if (this._lastCrumb) rec.crumb = this._lastCrumb;   /* v0.8 最近章节，队列行内展示 */
 		this.pruneStore();
 		this.saveStoreSoon();
 	}
@@ -1146,6 +1153,8 @@ class MuyunCompanionPlugin extends Plugin {
 		/* v0.6 各级章节可点击跳转；超长时只保留最后两级 + 省略号 */
 		const parts = chain.map(function (c) { return c.text || '（无标题）'; });
 		const text = parts.join(' › ');
+		/* v0.8 队列行内章节：链尾即最近所在章节，随续读位置一并落库 */
+		this._lastCrumb = parts.length ? parts[parts.length - 1] : '';
 		if (text !== this._crumbText) {
 			this._crumbText = text;
 			this.crumbEl.empty();
@@ -1190,26 +1199,49 @@ class MuyunCompanionPlugin extends Plugin {
 			const cjk = (text.match(/[\u4e00-\u9fff]/g) || []).length;
 			const words = (text.replace(/[\u4e00-\u9fff]/g, ' ').match(/[A-Za-z0-9_'’-]+/g) || []).length;
 			this._readTotal = Math.max(1, Math.round((cjk + words) / 400));
-			this.renderReadTime();
+			this.renderTimeStatus();
 		} catch (e) { /* 阅读态下编辑器暂不可用时静默跳过，等下一次触发 */ }
 	}
 
-	/* v0.6 剩余阅读时间：全文估时 × 剩余滚动比例；悬停看全文估时 */
-	renderReadTime() {
-		if (!this.timeEl || !this.settings.readTime || !this._readTotal) return;
+	/* v0.8 已阅读时长（用户反馈：剩余时长与顶部进度条信息重复）：
+	   统计开启 → 状态栏显示「⏱ 本次 · 本篇累计」真实读时；
+	   统计关闭 → 退回旧版「剩 N 分钟」滚动比例估算 */
+	renderTimeStatus() {
+		if (!this.timeEl || !this.settings.readTime) return;
+		if (this.settings.statsEnabled) {
+			const file = this.app.workspace.getActiveFile();
+			if (!file) { this.timeEl.setText(''); return; }
+			const cum = (this.stats.notes[file.path] && this.stats.notes[file.path].sec) || 0;
+			const sess = (this._noteSess && this._noteSess.path === file.path) ? this._noteSess.sec : 0;
+			const text = '⏱ ' + this.fmtShortDur(sess) + ' · ' + this.fmtShortDur(cum);
+			if (text !== this._timeText) {
+				this._timeText = text;
+				this.timeEl.setText(text);
+				this.timeEl.setAttribute('title', '本次已读 ' + this.fmtShortDur(sess) + ' · 本篇累计 ' + this.fmtShortDur(cum));
+			}
+			return;
+		}
 		const view = this.activeMarkdownView();
 		const el = this.scrollElOf(view);
-		let remain = this._readTotal;
+		let remain = this._readTotal || 0;
 		if (el) {
 			const max = el.scrollHeight - el.clientHeight;
-			if (max > 4) remain = Math.max(1, Math.round(this._readTotal * Math.max(0, 1 - el.scrollTop / max)));
+			if (max > 4) remain = Math.max(1, Math.round(remain * Math.max(0, 1 - el.scrollTop / max)));
 		}
+		if (!remain) return;
 		const text = '剩 ' + remain + ' 分钟';
-		if (text !== this._readTimeText) {
-			this._readTimeText = text;
+		if (text !== this._timeText) {
+			this._timeText = text;
 			this.timeEl.setText(text);
 			this.timeEl.setAttribute('title', '全文约 ' + this._readTotal + ' 分钟 · total ≈ ' + this._readTotal + ' min');
 		}
+	}
+
+	/* v0.8 时长短格式：42m / 3h05m */
+	fmtShortDur(sec) {
+		const m = Math.floor(sec / 60);
+		if (m < 60) return m + 'm';
+		return Math.floor(m / 60) + 'h' + (m % 60 < 10 ? '0' : '') + (m % 60) + 'm';
 	}
 
 	/* ═══ CM6 编辑器扩展：编辑态段落聚焦（默认关） + 打字机滚动（默认关） ═══ */
@@ -1347,8 +1379,8 @@ class MuyunCompanionSettingTab extends PluginSettingTab {
 				.onChange(async v => { p.settings.breadcrumb = v; await p.saveSettings(); p.updateBreadcrumb(); }));
 
 		new Setting(containerEl)
-			.setName('阅读时长估计 · Read time')
-			.setDesc('状态栏显示「剩 N 分钟」（按滚动位置估算剩余，悬停查看全文估时；中文 400 字/分钟）。')
+			.setName('阅读时长 · Read time')
+			.setDesc('状态栏显示真实已阅读时长「⏱ 本次 · 本篇累计」（需开启阅读统计；未开统计时退回「剩 N 分钟」估算，悬停看全文估时）。')
 			.addToggle(t => t.setValue(p.settings.readTime)
 				.onChange(async v => { p.settings.readTime = v; await p.saveSettings(); p.computeReadTime(); }));
 
@@ -1362,7 +1394,7 @@ class MuyunCompanionSettingTab extends PluginSettingTab {
 			.setName('阅读统计 · Reading stats')
 			.setDesc('本地记录每天/每篇的阅读时长、时段分布与会话（空闲 90 秒不计入），状态栏显示今日进度与连续天数。纯本地存储，默认关。')
 			.addToggle(t => t.setValue(p.settings.statsEnabled)
-				.onChange(async v => { p.settings.statsEnabled = v; await p.saveSettings(); p.updateStatsStatus(); }));
+				.onChange(async v => { p.settings.statsEnabled = v; await p.saveSettings(); p.updateStatsStatus(); p.renderTimeStatus(); }));
 
 		new Setting(containerEl)
 			.setName('每日阅读目标 · Daily goal')
@@ -1522,12 +1554,17 @@ class MuyunQueueModal extends Modal {
 		contentEl.empty();
 		contentEl.addClass('muyun-queue');
 		contentEl.createEl('h3', { text: '继续阅读 · Continue reading' });
-		contentEl.createEl('p', { text: '最近在读的笔记，点击回到上次的位置' }).addClass('muyun-queue-sub');
+		contentEl.createEl('p', { text: '点击打开 · Ctrl+点击新窗格 · 📌 置顶 · ✕ 移出' }).addClass('muyun-queue-sub');
 
+		/* v0.8：置顶优先，其余按最近阅读时间倒序 */
 		const items = Object.keys(p.store)
 			.map(function (k) { return { path: k, rec: p.store[k] }; })
 			.filter(function (it) { return it.rec.ts && it.rec.ratio != null && !(it.rec.done && it.rec.ratio > 0.97); })
-			.sort(function (a, b) { return b.rec.ts - a.rec.ts; })
+			.sort(function (a, b) {
+				const pa = a.rec.pin ? 1 : 0, pb = b.rec.pin ? 1 : 0;
+				if (pa !== pb) return pb - pa;
+				return b.rec.ts - a.rec.ts;
+			})
 			.slice(0, 20);
 
 		if (!items.length) {
@@ -1537,15 +1574,24 @@ class MuyunQueueModal extends Modal {
 
 		items.forEach(it => {
 			const row = contentEl.createDiv('muyun-q-row');
-			row.setAttribute('title', it.path);
+			row.setAttribute('title', it.path + '\n点击打开 · Ctrl+点击新窗格打开');
 			const nm = row.createDiv('muyun-q-name');
-			nm.createSpan({ text: it.path.split('/').pop().replace(/\.md$/i, '') });
-			nm.createDiv({ text: it.path }).addClass('muyun-q-path');
+			nm.createSpan({ text: (it.rec.pin ? '📌 ' : '') + it.path.split('/').pop().replace(/\.md$/i, '') });
+			nm.createDiv({ text: it.rec.crumb ? '⌁ ' + it.rec.crumb : it.path }).addClass('muyun-q-path');
 			const pct = Math.round((it.rec.ratio || 0) * 100);
 			const bar = row.createDiv('muyun-q-bar');
 			bar.createDiv('muyun-q-fill').style.width = pct + '%';
 			row.createDiv({ text: pct + '%' }).addClass('muyun-q-pct');
 			row.createDiv({ text: p.relTime(it.rec.ts) }).addClass('muyun-q-time');
+			const pin = row.createEl('button', { cls: 'muyun-q-pin' + (it.rec.pin ? ' on' : '') });
+			pin.textContent = '📌';
+			pin.setAttribute('aria-label', it.rec.pin ? '取消置顶' : '置顶');
+			pin.addEventListener('click', e => {
+				e.stopPropagation();
+				it.rec.pin = !it.rec.pin;
+				p.saveStoreSoon();
+				this.render();
+			});
 			const x = row.createEl('button', { cls: 'muyun-q-x' });
 			x.textContent = '✕';
 			x.setAttribute('aria-label', '移出队列');
@@ -1555,9 +1601,9 @@ class MuyunQueueModal extends Modal {
 				p.saveStoreSoon();
 				this.render();
 			});
-			row.addEventListener('click', () => {
+			row.addEventListener('click', ev => {
 				this.close();
-				p.app.workspace.openLinkText(it.path, '');
+				p.app.workspace.openLinkText(it.path, '', !!(ev.ctrlKey || ev.metaKey));
 			});
 		});
 	}

@@ -21,9 +21,9 @@
 | Edge minimap 侧缘小地图 | On 开 | Heading dot-rail on the right; tracks scrolling (reading) or cursor (live preview); click to jump; read trail persisted. 右缘标题点轨，阅读态随滚动、编辑态随光标，点击跳转，已读轨迹持久化 |
 | Reading spotlight 阅读聚光灯 | Off 关 | Current section lit, others dimmed — scroll-driven in reading view, cursor-driven in live preview. 当前小节全亮其余降透明：阅读态跟滚动、实时预览跟光标 |
 | Resume reading 续读记忆 | On 开 | Reopens each note at the position you left (LRU 400 notes). 每篇笔记记住上次读到的位置 |
-| Reading tray 继续阅读队列 | — | Command or status-bar 📖 click opens recently-read notes with position & progress; one click jumps back. 命令或点击状态栏 📖 打开在读列表，一键回到上次位置 |
+| Reading tray 继续阅读队列 | — | Command or status-bar 📖 click opens recently-read notes with position, progress & last chapter; one click jumps back, 📌 pins, Ctrl+click opens in a new pane. 命令或点击状态栏 📖 打开在读列表（含进度与最近章节），一键回到上次位置，可置顶、Ctrl+点击新窗格打开 |
 | Heading breadcrumb 标题面包屑 | On 开 | Status bar shows `Chapter › Section`, updates as you scroll; click any level to jump back to it. 状态栏实时显示当前章节路径，点击任意一级跳回该章节 |
-| Reading time 阅读时长估计 | On 开 | "N min left" in the status bar, based on scroll position; hover for the whole-note estimate. 状态栏显示剩余阅读分钟数，悬停查看全文估时 |
+| Reading time 阅读时长 | On 开 | Status bar shows time actually spent on the note: current session · all-time total (needs reading stats on; falls back to a remaining-time estimate otherwise). 状态栏显示真实已读时长「⏱ 本次 · 本篇累计」（需开阅读统计；未开时退回剩余分钟估算） |
 | Reading stats 阅读统计 | Off 关 | Local daily/per-note time tracking with hourly distribution & session counts, daily goal, streak (current & best), exportable weekly report, 12-week heatmap. 本地记录每日/每篇阅读时长（含时段分布与会话）、每日目标、连续天数（当前+最佳）、可导出周报与 12 周热图 |
 | Copy section link 复制小节链接 | — | Command that copies `[[Note#Section]]` to the clipboard. 一键复制当前小节的维基链接 |
 | Paragraph focus 段落聚焦 | Off 关 | In live preview, the paragraph around the cursor stays lit, the rest fades (writing mode). 光标所在段落全亮、其余淡出（写稿模式） |
