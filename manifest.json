@@ -1,9 +1,9 @@
 {
 	"id": "muyun-companion",
 	"name": "MuYun Companion",
-	"version": "0.5.0",
+	"version": "0.5.1",
 	"minAppVersion": "1.4.0",
-	"description": "MuYun theme companion: reading progress bar, spotlight, edge minimap, resume reading, breadcrumb & more. MuYun 慕云主题配套增强：阅读进度条、阅读聚光灯、侧缘小地图、续读记忆、标题面包屑等。",
+	"description": "MuYun theme companion: reading progress bar, spotlight, edge minimap, resume reading, breadcrumb & more. MuYun 慕云主题配套增强：阅读进度条、阅读聚光灯、侧缘小地图、续读记忆、标题面包屑等.",
 	"author": "GarrettFynn",
 	"isDesktopOnly": false
 }

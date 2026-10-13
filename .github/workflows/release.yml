@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 构建产物来源证明（官方目录审核的 Releases 建议项）：本仓库无构建链，
+      # main.js 即源码，attestation 证明 Release 资产与本仓库文件同源
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
+
+      - name: Create GitHub release with plugin files
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release delete "$tag" --yes || true
+          gh release create "$tag" main.js manifest.json styles.css \
+            --title "$tag" \
+            --generate-notes

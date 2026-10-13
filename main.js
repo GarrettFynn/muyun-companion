@@ -1,12 +1,14 @@
 'use strict';
 
-/* MuYun Companion · v0.5.0
+/* MuYun Companion · v0.5.1
    MuYun 慕云主题的配套增强插件，承载主题（纯 CSS）无法实现的效果：
    H1 顶部阅读进度条 / H2 阅读聚光灯（默认关）/ H8 侧缘小地图点轨 /
    续读记忆 / 状态栏标题面包屑与阅读时长 / 小地图阅读轨迹与悬停预览 /
    编辑态段落聚焦与打字机滚动（CM6，默认关）/ 复制小节链接 /
    本地阅读统计（每日目标 · 周报 · 12 周热图）/ 阅读热图弹窗。
    纯 JavaScript（无构建链），CommonJS 引用运行时 obsidian 模块。
+   v0.5.1：用户数据（设置/续读位置/轨迹/统计）统一存 data.json（随库隔离），
+   旧版 localStorage 数据首次启动时自动迁入。
    样式走 Obsidian 标准 CSS 变量并带兜底值，任意主题可用，MuYun 下观感最佳。 */
 
 const { Plugin, PluginSettingTab, Setting, MarkdownView, Modal, Notice, debounce } = require('obsidian');
@@ -38,9 +40,9 @@ const DEFAULT_SETTINGS = {
 
 const HEADING_SEL = 'h1, h2, h3, h4, h5, h6';
 const HEADING_SCOPE_SEL = HEADING_SEL.split(', ').map(function (s) { return ':scope > ' + s; }).join(', ');
-const STORE_KEY = 'muyun-companion.readpos.v1';
+const STORE_KEY = 'muyun-companion.readpos.v1';   /* ≤0.5.0 localStorage 旧键，仅 initData 迁移时读取 */
 const STORE_MAX = 400;
-const STATS_KEY = 'muyun-companion.stats.v1';
+const STATS_KEY = 'muyun-companion.stats.v1';     /* ≤0.5.0 localStorage 旧键，仅 initData 迁移时读取 */
 const STATS_DAYS_MAX = 120;
 const STATS_NOTES_MAX = 200;
 const STATS_IDLE_MS = 90000;   /* 距上次交互超过此值不计入阅读时长 */
@@ -52,7 +54,7 @@ function isHeadingBlock(el) {
 class MuyunCompanionPlugin extends Plugin {
 
 	async onload() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		await this.initData();
 
 		/* 运行时状态 */
 		this.barEl = null;
@@ -73,8 +75,6 @@ class MuyunCompanionPlugin extends Plugin {
 		this.timeEl.addClass('muyun-readtime');
 		this.statsEl = this.addStatusBarItem();
 		this.statsEl.addClass('muyun-stats');
-		this.loadStore();
-		this.loadStats();
 
 		this.addSettingTab(new MuyunCompanionSettingTab(this.app, this));
 
@@ -143,6 +143,8 @@ class MuyunCompanionPlugin extends Plugin {
 	}
 
 	onunload() {
+		clearTimeout(this._persistT);
+		this.persistNow();
 		this.teardownBar();
 		this.clearRail();
 		this.clearDim();
@@ -152,9 +154,49 @@ class MuyunCompanionPlugin extends Plugin {
 	}
 
 	async saveSettings() {
-		await this.saveData(this.settings);
+		await this.saveData(this.serializeData());
 		this.refresh();
 		this.updateBreadcrumb();
+	}
+
+	/* ═══ v0.5.1 数据层：全部用户数据（设置/续读位置/轨迹/统计）统一存 data.json，
+	   随库隔离、随库导出；旧版（≤0.5.0）store/stats 存 localStorage，首次启动一次性迁入并清除旧键 ═══ */
+	async initData() {
+		const data = await this.loadData();
+		if (data && data.schema === 2) {
+			this.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings || {});
+			this.store = data.store || {};
+			this.stats = data.stats;
+		} else {
+			this.settings = Object.assign({}, DEFAULT_SETTINGS, data || {});
+			this.store = {};
+			this.stats = null;
+			try {
+				const pos = localStorage.getItem(STORE_KEY);
+				const st = localStorage.getItem(STATS_KEY);
+				if (pos) this.store = JSON.parse(pos) || {};
+				if (st) this.stats = JSON.parse(st);
+				localStorage.removeItem(STORE_KEY);
+				localStorage.removeItem(STATS_KEY);
+			} catch (e) { /* 旧数据损坏时从零开始 */ }
+		}
+		if (!this.stats) this.stats = {};
+		if (!this.stats.days) this.stats.days = {};
+		if (!this.stats.notes) this.stats.notes = {};
+		if (!this.stats.goal) this.stats.goal = {};
+	}
+
+	serializeData() {
+		return { schema: 2, settings: this.settings, store: this.store, stats: this.stats };
+	}
+
+	persistNow() {
+		this.saveData(this.serializeData()).catch(function () { /* 写盘失败待下次防抖重试 */ });
+	}
+
+	persistSoon(ms) {
+		clearTimeout(this._persistT);
+		this._persistT = setTimeout(() => this.persistNow(), ms || 500);
 	}
 
 	toggle(key) {
@@ -211,26 +253,14 @@ class MuyunCompanionPlugin extends Plugin {
 		});
 	}
 
-	/* ═══ v0.4 本地阅读统计（默认关；纯 localStorage，空闲 90s 不计） ═══ */
+	/* ═══ v0.4 本地阅读统计（默认关；数据入 data.json，空闲 90s 不计） ═══ */
 	markActive() {
 		this._lastAct = Date.now();
 		if (!this._lastTick) this._lastTick = this._lastAct;
 	}
 
-	loadStats() {
-		try {
-			this.stats = JSON.parse(localStorage.getItem(STATS_KEY) || '{}') || {};
-		} catch (e) { this.stats = {}; }
-		if (!this.stats.days) this.stats.days = {};
-		if (!this.stats.notes) this.stats.notes = {};
-		if (!this.stats.goal) this.stats.goal = {};
-	}
-
 	saveStatsSoon() {
-		clearTimeout(this._statsT);
-		this._statsT = setTimeout(() => {
-			try { localStorage.setItem(STATS_KEY, JSON.stringify(this.stats)); } catch (e) { /* 存储满时静默丢弃 */ }
-		}, 500);
+		this.persistSoon(500);
 	}
 
 	statsDateKey(ts) {
@@ -353,7 +383,7 @@ class MuyunCompanionPlugin extends Plugin {
 
 	clearStats() {
 		this.stats = { days: {}, notes: {}, goal: {} };
-		try { localStorage.removeItem(STATS_KEY); } catch (e) { /* 忽略 */ }
+		this.persistNow();
 		this.updateStatsStatus();
 		new Notice('MuYun Companion：阅读统计已清除 · Stats cleared');
 	}
@@ -673,17 +703,9 @@ class MuyunCompanionPlugin extends Plugin {
 		}, 420);
 	}
 
-	/* ═══ 续读记忆：按路径记住滚动比，重开自动回位；附带已读轨迹持久化 ═══ */
-	loadStore() {
-		try { this.store = JSON.parse(localStorage.getItem(STORE_KEY) || '{}') || {}; }
-		catch (e) { this.store = {}; }
-	}
-
+	/* ═══ 续读记忆：按路径记住滚动比，重开自动回位；附带已读轨迹持久化（v0.5.1 起入 data.json） ═══ */
 	saveStoreSoon() {
-		clearTimeout(this._storeT);
-		this._storeT = setTimeout(() => {
-			localStorage.setItem(STORE_KEY, JSON.stringify(this.store));
-		}, 400);
+		this.persistSoon(400);
 	}
 
 	pruneStore() {

@@ -52,7 +52,7 @@ Every feature has its own toggle under Settings → MuYun Companion; spotlight d
 
 ## Privacy 隐私
 
-Pure local computation — no network access, no telemetry. Reading stats, resume positions and trails persist only to the plugin's `data.json` inside your vault. 纯本地计算——零联网零遥测；阅读统计、续读位置与轨迹只写入库内插件的 `data.json`。
+Pure local computation — no network access, no telemetry. Since 0.5.1, all plugin data (settings, reading stats, resume positions, trails) persists to the plugin's `data.json` inside your vault — isolated per vault and included in vault backups; data from ≤0.5.0 (stored in localStorage) migrates automatically on first launch. 纯本地计算——零联网零遥测。0.5.1 起全部插件数据（设置/阅读统计/续读位置/轨迹）存于库内插件的 `data.json`，按库隔离、随库备份；≤0.5.0 的旧数据（localStorage）首次启动时自动迁入。
 
 ## License
 
