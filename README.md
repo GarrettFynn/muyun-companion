@@ -9,9 +9,9 @@
 
 ## Overview 概述
 
-**EN** — MuYun Companion adds what a pure-CSS theme cannot do: eleven reading & writing aids, each with an independent toggle. It was designed alongside the [MuYun theme](https://github.com/GarrettFynn/obsidian-muyun) and looks best with it, but it styles itself through Obsidian's standard CSS variables (with fallback values), so it works under any theme. Everything is computed locally — no network access, no telemetry; your reading data never leaves `data.json` in your vault.
+**EN** — MuYun Companion adds what a pure-CSS theme cannot do: twelve reading & writing aids, each with an independent toggle. It was designed alongside the [MuYun theme](https://github.com/GarrettFynn/obsidian-muyun) and looks best with it, but it styles itself through Obsidian's standard CSS variables (with fallback values), so it works under any theme. Everything is computed locally — no network access, no telemetry; your reading data never leaves `data.json` in your vault.
 
-**中文** — MuYun Companion 补足纯 CSS 主题做不到的部分：十一项阅读/写作增强，每项可独立开关。它随 [MuYun 主题](https://github.com/GarrettFynn/obsidian-muyun)一同设计、在 MuYun 下观感最佳，但样式全部走 Obsidian 标准 CSS 变量（自带兜底值），任何主题下均可使用。所有计算纯本地——零联网、零遥测，阅读数据只存在库内 `data.json`。
+**中文** — MuYun Companion 补足纯 CSS 主题做不到的部分：十二项阅读/写作增强，每项可独立开关。它随 [MuYun 主题](https://github.com/GarrettFynn/obsidian-muyun)一同设计、在 MuYun 下观感最佳，但样式全部走 Obsidian 标准 CSS 变量（自带兜底值），任何主题下均可使用。所有计算纯本地——零联网、零遥测，阅读数据只存在库内 `data.json`。
 
 ## Features 功能
 
@@ -21,9 +21,10 @@
 | Edge minimap 侧缘小地图 | On 开 | Heading dot-rail on the right; tracks scrolling (reading) or cursor (live preview); click to jump; read trail persisted. 右缘标题点轨，阅读态随滚动、编辑态随光标，点击跳转，已读轨迹持久化 |
 | Reading spotlight 阅读聚光灯 | Off 关 | Current section lit, others dimmed — scroll-driven in reading view, cursor-driven in live preview. 当前小节全亮其余降透明：阅读态跟滚动、实时预览跟光标 |
 | Resume reading 续读记忆 | On 开 | Reopens each note at the position you left (LRU 400 notes). 每篇笔记记住上次读到的位置 |
+| Reading tray 继续阅读队列 | — | Command or status-bar 📖 click opens recently-read notes with position & progress; one click jumps back. 命令或点击状态栏 📖 打开在读列表，一键回到上次位置 |
 | Heading breadcrumb 标题面包屑 | On 开 | Status bar shows `Chapter › Section`, updates as you scroll; click any level to jump back to it. 状态栏实时显示当前章节路径，点击任意一级跳回该章节 |
 | Reading time 阅读时长估计 | On 开 | "N min left" in the status bar, based on scroll position; hover for the whole-note estimate. 状态栏显示剩余阅读分钟数，悬停查看全文估时 |
-| Reading stats 阅读统计 | Off 关 | Local daily/per-note time tracking, daily goal, weekly report, 12-week heatmap. 本地记录每日/每篇阅读时长、每日目标、周报与 12 周热图 |
+| Reading stats 阅读统计 | Off 关 | Local daily/per-note time tracking with hourly distribution & session counts, daily goal, streak (current & best), exportable weekly report, 12-week heatmap. 本地记录每日/每篇阅读时长（含时段分布与会话）、每日目标、连续天数（当前+最佳）、可导出周报与 12 周热图 |
 | Copy section link 复制小节链接 | — | Command that copies `[[Note#Section]]` to the clipboard. 一键复制当前小节的维基链接 |
 | Paragraph focus 段落聚焦 | Off 关 | In live preview, the paragraph around the cursor stays lit, the rest fades (writing mode). 光标所在段落全亮、其余淡出（写稿模式） |
 | Typewriter scrolling 打字机滚动 | Off 关 | Keeps the cursor on an anchor line (top quarter / upper third / middle — adjustable), smooth-eased. 光标保持在可调锚点线处（上四分之一/上三分之一/中线），平滑滚动 |

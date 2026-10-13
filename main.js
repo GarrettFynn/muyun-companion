@@ -1,16 +1,19 @@
 'use strict';
 
-/* MuYun Companion · v0.6.1
+/* MuYun Companion · v0.7.0
    MuYun 慕云主题的配套增强插件，承载主题（纯 CSS）无法实现的效果：
-   H1 顶部阅读进度条（v0.6 起 H2 章节刻度）/ H2 阅读聚光灯（默认关）/ H8 侧缘小地图点轨 /
-   续读记忆 / 状态栏标题面包屑（v0.6 起各级可点击跳转）与剩余阅读时长 /
-   小地图阅读轨迹与悬停预览 / 编辑态段落聚焦与打字机滚动（CM6，默认关；v0.6 起锚点可调）/
-   折叠平滑展开（v0.6，FLIP 位移动画）/ 复制小节链接 /
-   本地阅读统计（每日目标 · 周报 · 12 周热图 · 连续天数）/ 阅读热图弹窗。
+   H1 顶部阅读进度条（H2 章节刻度）/ H2 阅读聚光灯（默认关）/ H8 侧缘小地图点轨 /
+   续读记忆 + 继续阅读队列 / 状态栏标题面包屑（可点击跳转）与剩余阅读时长 /
+   小地图阅读轨迹与悬停预览 / 编辑态段落聚焦与打字机滚动（CM6，默认关，锚点可调）/
+   折叠平滑展开（FLIP 位移动画）/ 复制小节链接 /
+   本地阅读统计（每日目标 · 连续天数 · 时段分布 · 会话 · 完读率 · 周报导出 · 12 周热图）/
+   阅读热图弹窗。
    纯 JavaScript（无构建链），CommonJS 引用运行时 obsidian 模块。
    v0.5.1：用户数据（设置/续读位置/轨迹/统计）统一存 data.json（随库隔离），
    旧版 localStorage 数据首次启动时自动迁入。
    v0.6.1：面包屑折叠目标先展开再落点、进度条刻度悬停章节名、打字机锚点切换即时重锚。
+   v0.7.0：P2 全家——队列/streak（当前+最佳）/统计六维（days 双态 {sec,sess,maxSess,hours}，
+   超龄折入 months 月度归档不再丢弃）/周报导出（ISO 周号命名不覆盖）+ debugMode 热路径打点。
    样式走 Obsidian 标准 CSS 变量并带兜底值，任意主题可用，MuYun 下观感最佳。 */
 
 const { Plugin, PluginSettingTab, Setting, MarkdownView, Modal, Notice, debounce } = require('obsidian');
@@ -40,7 +43,9 @@ const DEFAULT_SETTINGS = {
 	foldAnim: true,         /* 折叠平滑展开（编辑视图点击折叠箭头时 FLIP 位移动画） */
 	finishGlow: true,       /* 读完柔光（一次性彩蛋） */
 	statsEnabled: false,    /* 本地阅读统计（默认关） */
-	dailyGoalMin: 30        /* 每日阅读目标（分钟，0 = 关） */
+	dailyGoalMin: 30,       /* 每日阅读目标（分钟，0 = 关） */
+	reportFolder: '阅读统计', /* 周报导出文件夹（D4） */
+	debugMode: false        /* 调试打点：热路径耗时输出到控制台（性能预算表实测用） */
 };
 
 const HEADING_SEL = 'h1, h2, h3, h4, h5, h6';
@@ -51,6 +56,7 @@ const STATS_KEY = 'muyun-companion.stats.v1';     /* ≤0.5.0 localStorage 旧�
 const STATS_DAYS_MAX = 120;
 const STATS_NOTES_MAX = 200;
 const STATS_IDLE_MS = 90000;   /* 距上次交互超过此值不计入阅读时长 */
+const STATS_SESS_GAP_MS = 600000; /* v0.7 会话归并间隔：≤10min 的两次计入算同一次阅读 */
 
 function isHeadingBlock(el) {
 	return el.matches(HEADING_SEL) || !!el.querySelector(HEADING_SCOPE_SEL);
@@ -80,6 +86,8 @@ class MuyunCompanionPlugin extends Plugin {
 		this.timeEl.addClass('muyun-readtime');
 		this.statsEl = this.addStatusBarItem();
 		this.statsEl.addClass('muyun-stats');
+		/* v0.7 D1：点击状态栏 📖 即打开继续阅读队列 */
+		this.statsEl.addEventListener('click', () => new MuyunQueueModal(this.app, this).open());
 
 		this.addSettingTab(new MuyunCompanionSettingTab(this.app, this));
 
@@ -118,6 +126,14 @@ class MuyunCompanionPlugin extends Plugin {
 		this.addCommand({
 			name: '重置当前笔记阅读轨迹 Reset read trail of current note',
 			callback: () => this.resetTrail()
+		});
+		this.addCommand({
+			name: '继续阅读 Continue reading',
+			callback: () => new MuyunQueueModal(this.app, this).open()
+		});
+		this.addCommand({
+			name: '导出阅读周报 Export weekly report',
+			callback: () => this.exportWeeklyReport()
 		});
 
 		/* H1 进度条挂在 body 上，全生命周期存在，按需显隐 */
@@ -190,9 +206,31 @@ class MuyunCompanionPlugin extends Plugin {
 			} catch (e) { /* 旧数据损坏时从零开始 */ }
 		}
 		if (!this.stats) this.stats = {};
+		this.normalizeStats();
+	}
+
+	/* v0.7 stats 结构归一化：days/notes/goal 既有 + months 月度归档 + best 历史最佳 streak */
+	normalizeStats() {
 		if (!this.stats.days) this.stats.days = {};
 		if (!this.stats.notes) this.stats.notes = {};
 		if (!this.stats.goal) this.stats.goal = {};
+		if (!this.stats.months) this.stats.months = {};
+		if (typeof this.stats.best !== 'number') this.stats.best = 0;
+	}
+
+	/* v0.7 days 双态读取：≤0.6 为裸数字，0.7 起为 {sec, sess, maxSess, hours} */
+	daySec(key) {
+		const d = this.stats.days[key];
+		if (!d) return 0;
+		return typeof d === 'number' ? d : (d.sec || 0);
+	}
+
+	dayRec(key) {
+		const v = this.stats.days[key];
+		if (v && typeof v === 'object') return v;
+		const rec = { sec: typeof v === 'number' ? v : 0 };
+		this.stats.days[key] = rec;
+		return rec;
 	}
 
 	serializeData() {
@@ -200,7 +238,11 @@ class MuyunCompanionPlugin extends Plugin {
 	}
 
 	persistNow() {
-		this.saveData(this.serializeData()).catch(function () { /* 写盘失败待下次防抖重试 */ });
+		/* debugMode 门控打点（有意设计，勿修） */
+		const t0 = this.settings.debugMode ? performance.now() : 0;
+		this.saveData(this.serializeData()).then(() => {
+			if (this.settings.debugMode) console.log('[muyun] persist ' + (performance.now() - t0).toFixed(2) + 'ms');
+		}, function () { /* 写盘失败待下次防抖重试 */ });
 	}
 
 	persistSoon(ms) {
@@ -257,12 +299,15 @@ class MuyunCompanionPlugin extends Plugin {
 		if (this.raf) return;
 		this.raf = requestAnimationFrame(() => {
 			this.raf = 0;
+			/* debugMode 门控打点（性能预算表实测；有意设计，勿修） */
+			const t0 = this.settings.debugMode ? performance.now() : 0;
 			this.updateProgress();
 			this.renderReadTime();
 			this.applySpotlight();
 			this.updateRail();
 			this.updateBreadcrumb();
 			this.saveCurrentPosSoon();
+			if (this.settings.debugMode) console.log('[muyun] scroll-frame ' + (performance.now() - t0).toFixed(2) + 'ms');
 		});
 	}
 
@@ -296,7 +341,22 @@ class MuyunCompanionPlugin extends Plugin {
 
 	addReadSecs(sec, now) {
 		const key = this.statsDateKey(now);
-		this.stats.days[key] = (this.stats.days[key] || 0) + sec;
+		const d = this.dayRec(key);
+		d.sec += sec;
+		/* v0.7 时段分布：当天 hours 桶（30s tick 按触发时刻归桶） */
+		const h = new Date(now).getHours();
+		d.hours = d.hours || {};
+		d.hours[h] = (d.hours[h] || 0) + sec;
+		/* v0.7 会话质量：间隔 ≤10min 归并为同一次；跨天重置（重载后首 tick 记新会话，近似） */
+		const gap = this._sessLast ? now - this._sessLast : Infinity;
+		if (this._sessKey !== key || gap > STATS_SESS_GAP_MS) {
+			this._sessKey = key;
+			this._sessSec = 0;
+			d.sess = (d.sess || 0) + 1;
+		}
+		this._sessLast = now;
+		this._sessSec += sec;
+		d.maxSess = Math.max(d.maxSess || 0, this._sessSec);
 		const file = this.app.workspace.getActiveFile();
 		if (file) {
 			const rec = this.stats.notes[file.path] || (this.stats.notes[file.path] = { sec: 0, ts: 0 });
@@ -304,6 +364,9 @@ class MuyunCompanionPlugin extends Plugin {
 			rec.ts = now;
 		}
 		this.pruneStats(now);
+		/* v0.7 历史最佳 streak 顺带维护 */
+		const streak = this.calcStreak(now);
+		if (streak > this.stats.best) this.stats.best = streak;
 		this.updateStatsStatus();
 		this.checkGoal(key, now);
 		this.saveStatsSoon();
@@ -311,7 +374,16 @@ class MuyunCompanionPlugin extends Plugin {
 
 	pruneStats(now) {
 		const dayKeys = Object.keys(this.stats.days).sort();
-		while (dayKeys.length > STATS_DAYS_MAX) delete this.stats.days[dayKeys.shift()];
+		while (dayKeys.length > STATS_DAYS_MAX) {
+			const k = dayKeys.shift();
+			/* v0.7 月度归档：超龄明细折入 months（仅秒数；会话/时段明细只保留在 120 天窗口内），不再丢弃 */
+			const sec = this.daySec(k);
+			if (sec > 0) {
+				const mk = k.slice(0, 7);
+				this.stats.months[mk] = (this.stats.months[mk] || 0) + sec;
+			}
+			delete this.stats.days[k];
+		}
 		const noteKeys = Object.keys(this.stats.notes);
 		if (noteKeys.length > STATS_NOTES_MAX) {
 			noteKeys.sort((a, b) => (this.stats.notes[a].ts || 0) - (this.stats.notes[b].ts || 0));
@@ -322,17 +394,20 @@ class MuyunCompanionPlugin extends Plugin {
 	updateStatsStatus() {
 		if (!this.statsEl) return;
 		if (!this.settings.statsEnabled) { this.statsEl.setText(''); return; }
-		const today = this.stats.days[this.statsDateKey(Date.now())] || 0;
+		const today = this.daySec(this.statsDateKey(Date.now()));
 		const min = Math.floor(today / 60);
 		const goal = this.settings.dailyGoalMin;
-		this.statsEl.setText(goal > 0 ? ('📖 ' + min + '/' + goal + 'm' + (min >= goal ? ' ✓' : '')) : ('📖 ' + min + 'm'));
+		/* v0.7 streak 常驻：≥2 天才显示（D3：断签不提醒） */
+		const streak = this.calcStreak(Date.now());
+		const tail = streak >= 2 ? ' · 🔥' + streak : '';
+		this.statsEl.setText((goal > 0 ? ('📖 ' + min + '/' + goal + 'm' + (min >= goal ? ' ✓' : '')) : ('📖 ' + min + 'm')) + tail);
 		this.statsEl.classList.toggle('muyun-goal-done', goal > 0 && min >= goal);
 	}
 
 	checkGoal(dayKey) {
 		const goal = this.settings.dailyGoalMin;
 		if (goal <= 0 || this.stats.goal[dayKey]) return;
-		if ((this.stats.days[dayKey] || 0) >= goal * 60) {
+		if (this.daySec(dayKey) >= goal * 60) {
 			this.stats.goal[dayKey] = true;
 			new Notice('MuYun Companion：今日阅读目标达成 · Daily goal reached 🎉');
 			this.saveStatsSoon();
@@ -353,10 +428,10 @@ class MuyunCompanionPlugin extends Plugin {
 	calcStreak(now) {
 		const DAY = 86400000;
 		let start = now;
-		if (!(this.stats.days[this.statsDateKey(now)] > 0)) start = now - DAY;
+		if (this.daySec(this.statsDateKey(now)) <= 0) start = now - DAY;
 		let streak = 0;
 		for (let t = start; ; t -= DAY) {
-			if (this.stats.days[this.statsDateKey(t)] > 0) streak++;
+			if (this.daySec(this.statsDateKey(t)) > 0) streak++;
 			else break;
 			if (streak > 3650) break; /* 防御上限 */
 		}
@@ -365,20 +440,30 @@ class MuyunCompanionPlugin extends Plugin {
 
 	/* 周报纯函数：本周合计/今天/最常读三篇（分钟） */
 	summarizeWeek(stats, now) {
+		const self = this;
 		const out = { week: 0, today: 0, top: [] };
 		const todayKey = this.statsDateKey(now);
 		const dow = new Date(now).getDay();
 		const monday = now - ((dow === 0 ? 6 : dow - 1) * 86400000);
 		const mondayKey = this.statsDateKey(monday);
 		Object.keys(stats.days || {}).forEach(function (k) {
-			if (k >= mondayKey) out.week += stats.days[k];
-			if (k === todayKey) out.today = stats.days[k];
+			if (k >= mondayKey) out.week += self.daySec(k);
+			if (k === todayKey) out.today = self.daySec(k);
 		});
 		out.top = Object.keys(stats.notes || {})
 			.map(function (p) { return { path: p, sec: stats.notes[p].sec }; })
 			.sort(function (a, b) { return b.sec - a.sec; })
 			.slice(0, 3);
 		return out;
+	}
+
+	clearStats() {
+		this.stats = { days: {}, notes: {}, goal: {}, months: {}, best: 0 };
+		this._sessKey = ''; this._sessLast = 0; this._sessSec = 0;
+		this.normalizeStats();
+		this.persistNow();
+		this.updateStatsStatus();
+		new Notice('MuYun Companion：阅读统计已清除 · Stats cleared');
 	}
 
 	showWeeklyStats() {
@@ -393,6 +478,153 @@ class MuyunCompanionPlugin extends Plugin {
 			});
 		}
 		new Notice('MuYun Companion · 阅读统计 Reading stats\n' + lines.join('\n'), 6000);
+	}
+
+	/* ═══ v0.7 ① 继续阅读队列：store LRU 数据 → 可主动找回的在读列表 ═══ */
+	relTime(ts) {
+		const m = Math.floor((Date.now() - ts) / 60000);
+		if (m < 1) return '刚刚';
+		if (m < 60) return m + ' 分钟前';
+		const h = Math.floor(m / 60);
+		if (h < 24) return h + ' 小时前';
+		const d = Math.floor(h / 24);
+		if (d === 1) return '昨天';
+		if (d < 30) return d + ' 天前';
+		return Math.floor(d / 30) + ' 个月前';
+	}
+
+	/* ═══ v0.7 ④ 周报导出：上周完整周，ISO 周号命名不覆盖；模板含环比/时段/会话/完读率/目标日历 ═══ */
+	isoWeekMonday(now) {
+		const t = new Date(now);
+		const dow = t.getDay() === 0 ? 6 : t.getDay() - 1;
+		t.setDate(t.getDate() - dow);
+		t.setHours(0, 0, 0, 0);
+		return t;
+	}
+
+	isoWeekNum(monday) {
+		const thu = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 3);
+		const yearStart = new Date(thu.getFullYear(), 0, 1);
+		const week = Math.ceil((((thu - yearStart) / 86400000) + yearStart.getDay() + 1) / 7);
+		return { year: thu.getFullYear(), week: week };
+	}
+
+	async exportWeeklyReport() {
+		if (!this.settings.statsEnabled) {
+			new Notice('MuYun Companion：请先在设置中开启「阅读统计」· Enable reading stats first');
+			return;
+		}
+		const DAY = 86400000;
+		const pad = function (n) { return (n < 10 ? '0' : '') + n; };
+		const mon = new Date(this.isoWeekMonday(Date.now()).getTime() - 7 * DAY);   /* 上周一：导出完整周 */
+		const keys = [];
+		for (let i = 0; i < 7; i++) {
+			const d = new Date(mon.getTime() + i * DAY);
+			keys.push(d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()));
+		}
+
+		/* 汇总：周合计/环比/会话/时段/目标日历 */
+		let weekSec = 0, prevSec = 0, sess = 0, maxSess = 0;
+		const hours = new Array(24).fill(0);
+		const goalRow = [];
+		keys.forEach(function (k, i) {
+			weekSec += this.daySec(k);
+			const d = new Date(mon.getTime() + (i - 7) * DAY);
+			prevSec += this.daySec(d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()));
+			const rec = this.stats.days[k];
+			if (rec && typeof rec === 'object') {
+				sess += rec.sess || 0;
+				maxSess = Math.max(maxSess, rec.maxSess || 0);
+				Object.keys(rec.hours || {}).forEach(function (h) { hours[+h] += rec.hours[h]; });
+			}
+			goalRow.push(this.stats.goal[k] ? '✓' : (this.daySec(k) > 0 ? '·' : '✗'));
+		}, this);
+		const delta = prevSec > 0 ? Math.round((weekSec - prevSec) / prevSec * 100) : null;
+
+		/* 完读率：本周读过（store.ts 落在本周内）/ 其中读完（done） */
+		const sun = new Date(mon.getTime() + 6 * DAY); sun.setHours(23, 59, 59, 999);
+		let opened = 0, finished = 0;
+		Object.keys(this.store).forEach(function (k) {
+			const r = this.store[k];
+			if (!r.ts || r.ts < mon.getTime() || r.ts > sun.getTime()) return;
+			opened++;
+			if (r.done) finished++;
+		}, this);
+
+		/* 时段条形 + 黄金时段（相邻 2 小时窗和最大） */
+		const maxH = Math.max.apply(null, hours);
+		let bestW = 0, bestSum = -1;
+		for (let h = 0; h < 23; h++) {
+			const s2 = hours[h] + hours[h + 1];
+			if (s2 > bestSum) { bestSum = s2; bestW = h; }
+		}
+
+		const fm = function (sec) {
+			const m = Math.round(sec / 60);
+			return m >= 60 ? (Math.floor(m / 60) + 'h ' + (m % 60) + 'm') : (m + 'm');
+		};
+		const sunEnd = new Date(mon.getTime() + 6 * DAY);
+		const dateRange = (mon.getMonth() + 1) + '月' + mon.getDate() + '日 ~ ' + (sunEnd.getMonth() + 1) + '月' + sunEnd.getDate() + '日';
+		const wk = this.isoWeekNum(mon);
+		const wtag = wk.year + '-W' + pad(wk.week);
+		const streakNow = this.calcStreak(Date.now());
+		const goalHit = goalRow.filter(function (c) { return c === '✓'; }).length;
+
+		const L = [];
+		L.push('# 阅读周报 · ' + dateRange + '（' + wtag + '）');
+		L.push('');
+		L.push('> MuYun Companion 本地生成 · 数据仅来自本库');
+		L.push('');
+		L.push('本周合计 **' + fm(weekSec) + '**' + (delta === null ? '' : '（较前一周 ' + (delta >= 0 ? '+' : '') + delta + '%）')
+			+ ' ｜ 日均 **' + fm(Math.round(weekSec / 7)) + '**'
+			+ ' ｜ 目标达成 **' + goalHit + '/7 天**：' + goalRow.join('')
+			+ ' ｜ 🔥 当前 ' + streakNow + ' / 最佳 ' + Math.max(this.stats.best || 0, streakNow));
+		L.push('');
+		L.push('## 会话与专注');
+		L.push('本周 ' + (sess || '—') + ' 次阅读 · 单次最长 ' + (maxSess > 0 ? fm(maxSess) : '—'));
+		L.push('');
+		L.push('## 时段分布（本周）');
+		if (maxH <= 0) {
+			L.push('_本周无时段数据_');
+		} else {
+			L.push('| 时段 | 分钟 | 分布 |');
+			L.push('| --- | --- | --- |');
+			hours.forEach(function (m, h) {
+				if (m <= 0) return;
+				L.push('| ' + pad(h) + ':00 | ' + Math.round(m / 60) + ' | ' + '█'.repeat(Math.max(1, Math.round(m / maxH * 14))) + ' |');
+			});
+			L.push('');
+			L.push('**黄金时段：' + pad(bestW) + ':00–' + pad(bestW + 2) + ':00**（占本周 ' + (weekSec > 0 ? Math.round(bestSum / weekSec * 100) : 0) + '%）');
+		}
+		L.push('');
+		L.push('## 完读');
+		L.push('本周读过 **' + opened + '** 篇 · 读完 **' + finished + '** 篇' + (opened > 0 ? '（完读率 ' + Math.round(finished / opened * 100) + '%）' : ''));
+		L.push('');
+		const top = Object.keys(this.stats.notes)
+			.map(function (p) { return { path: p, sec: this.stats.notes[p].sec || 0, ratio: (this.store[p] && this.store[p].ratio) || 0 }; }, this)
+			.sort(function (a, b) { return b.sec - a.sec; })
+			.slice(0, 10);
+		if (top.length) {
+			L.push('## 累计最常读 Top 10');
+			L.push('| 笔记 | 累计时长 | 当前进度 |');
+			L.push('| --- | --- | --- |');
+			top.forEach(function (t) {
+				L.push('| [[' + t.path.replace(/\.md$/i, '') + ']] | ' + fm(t.sec) + ' | ' + Math.round(t.ratio * 100) + '% |');
+			});
+		}
+		L.push('');
+
+		/* 写入（文件夹不存在则建；同名追加序号不覆盖） */
+		const folder = (this.settings.reportFolder || '阅读统计').replace(/^\/+|\/+$/g, '') || '阅读统计';
+		try {
+			if (!this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
+		} catch (e) { /* 已存在等竞态，忽略 */ }
+		let path = folder + '/阅读周报 ' + wtag + '.md';
+		let n = 2;
+		while (this.app.vault.getAbstractFileByPath(path)) path = folder + '/阅读周报 ' + wtag + '-' + (n++) + '.md';
+		await this.app.vault.create(path, L.join('\n'));
+		this.app.workspace.openLinkText(path, '', false);
+		new Notice('MuYun Companion：周报已导出 · Report saved\n' + path, 5000);
 	}
 
 	clearStats() {
@@ -473,6 +705,7 @@ class MuyunCompanionPlugin extends Plugin {
 	/* ═══ v0.6 进度条 H2 章节刻度：章界在条上打细刻度；按「文件+内容高」去重，仅布局/文档变化时重绘 ═══ */
 	renderBarTicks() {
 		if (!this.barTicks) return;
+		const t0 = this.settings.debugMode ? performance.now() : 0;   /* debugMode 门控（有意设计，勿修） */
 		const view = this.activeMarkdownView();
 		const el = this.scrollElOf(view);
 		const file = this.app.workspace.getActiveFile();
@@ -501,6 +734,7 @@ class MuyunCompanionPlugin extends Plugin {
 			}
 		});
 		this.barTicks.appendChild(frag);
+		if (this.settings.debugMode) console.log('[muyun] ticks-render ' + (performance.now() - t0).toFixed(2) + 'ms');   /* debugMode 门控（有意设计，勿修） */
 	}
 
 	/* ═══ v0.6 折叠平滑展开（编辑视图）：点击折叠箭头时对后续行块做 FLIP 位移动画。
@@ -527,6 +761,7 @@ class MuyunCompanionPlugin extends Plugin {
 				if (r.height > 0) snap.push([line, r.top]);
 			}
 			if (!snap.length) return;
+			const t0 = this.settings.debugMode ? performance.now() : 0;   /* debugMode 门控（有意设计，勿修） */
 			requestAnimationFrame(() => requestAnimationFrame(() => {
 				let moved = false;
 				for (const pair of snap) {
@@ -547,6 +782,7 @@ class MuyunCompanionPlugin extends Plugin {
 				setTimeout(function () {
 					for (const pair of snap) { pair[0].style.transition = ''; pair[0].style.transform = ''; }
 				}, 240);
+				if (this.settings.debugMode) console.log('[muyun] fold-flip ' + (performance.now() - t0).toFixed(2) + 'ms');
 			}));
 		}, { capture: true });
 	}
@@ -1124,7 +1360,7 @@ class MuyunCompanionSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('阅读统计 · Reading stats')
-			.setDesc('本地记录每天/每篇的阅读时长（空闲 90 秒不计入），状态栏显示今日进度。纯本地存储，默认关。')
+			.setDesc('本地记录每天/每篇的阅读时长、时段分布与会话（空闲 90 秒不计入），状态栏显示今日进度与连续天数。纯本地存储，默认关。')
 			.addToggle(t => t.setValue(p.settings.statsEnabled)
 				.onChange(async v => { p.settings.statsEnabled = v; await p.saveSettings(); p.updateStatsStatus(); }));
 
@@ -1135,6 +1371,13 @@ class MuyunCompanionSettingTab extends PluginSettingTab {
 				.setValue(p.settings.dailyGoalMin)
 				.setDynamicTooltip()
 				.onChange(async v => { p.settings.dailyGoalMin = v; await p.saveSettings(); p.updateStatsStatus(); }));
+
+		new Setting(containerEl)
+			.setName('报告文件夹 · Report folder')
+			.setDesc('「导出阅读周报」命令的存放位置（库内路径，不存在会自动创建）。')
+			.addText(t => t.setPlaceholder('阅读统计')
+				.setValue(p.settings.reportFolder)
+				.onChange(async v => { p.settings.reportFolder = v.trim() || '阅读统计'; await p.saveSettings(); }));
 
 		containerEl.createEl('h3', { text: '写作 Writing' });
 
@@ -1171,6 +1414,12 @@ class MuyunCompanionSettingTab extends PluginSettingTab {
 			.addToggle(t => t.setValue(p.settings.foldAnim)
 				.onChange(async v => { p.settings.foldAnim = v; await p.saveSettings(); }));
 
+		new Setting(containerEl)
+			.setName('调试打点 · Debug timing')
+			.setDesc('在开发者控制台输出热路径耗时（滚动帧/刻度/折叠动画/写盘），用于核对《性能预算与工程约定》的预算表。默认关。')
+			.addToggle(t => t.setValue(p.settings.debugMode)
+				.onChange(async v => { p.settings.debugMode = v; await p.saveSettings(); }));
+
 		containerEl.createEl('h3', { text: '说明 Notes' });
 		const notes = containerEl.createEl('p', {
 			text: '聚光灯与小地图仅阅读视图生效；编辑态效果依赖 CodeMirror（不支持时自动禁用）。' +
@@ -1196,6 +1445,13 @@ class MuyunHeatmapModal extends Modal {
 		contentEl.addClass('muyun-heatmap-modal');
 		contentEl.createEl('h3', { text: '阅读热图 · Reading heatmap（近 12 周）' });
 
+		/* v0.7 streak 头部：当前 / 历史最佳 */
+		const streakNow = p.calcStreak(now);
+		const streakHead = contentEl.createEl('div', {
+			text: '🔥 ' + streakNow + ' 天连续阅读 · 最佳 ' + Math.max(p.stats.best || 0, streakNow) + ' 天'
+		});
+		streakHead.addClass('muyun-streak-head');
+
 		if (!p.settings.statsEnabled) {
 			const hint = contentEl.createEl('p', {
 				text: '阅读统计当前关闭，热图显示的是历史遗留数据。到设置里开启「阅读统计」后开始积累。'
@@ -1215,9 +1471,9 @@ class MuyunHeatmapModal extends Modal {
 				const key = p.statsDateKey(ts);
 				const cell = grid.createDiv('muyun-heat-cell');
 				if (ts > now) { cell.addClass('future'); continue; }
-				const cls = p.heatClass(p.stats.days[key]);
+				const cls = p.heatClass(p.daySec(key));
 				if (cls) cell.addClass(cls);
-				const min = Math.round((p.stats.days[key] || 0) / 60);
+				const min = Math.round(p.daySec(key) / 60);
 				cell.setAttribute('title', key + ' · ' + (min > 0 ? min + ' 分钟' : '无阅读'));
 			}
 		}
@@ -1228,7 +1484,7 @@ class MuyunHeatmapModal extends Modal {
 		const fmtMin = function (sec) { return Math.round(sec / 60) + ' 分钟'; };
 		side.createEl('div', { text: '本周 ' + fm(s.week) + ' 分钟' }).addClass('hm-big');
 		side.createEl('div', { text: '今天 ' + fmtMin(s.today) + (p.settings.dailyGoalMin > 0 ? ' / 目标 ' + p.settings.dailyGoalMin + ' 分钟' : '') });
-		side.createEl('div', { text: '连续达成 ' + p.calcStreak(now) + ' 天' });
+		side.createEl('div', { text: '最佳连续 ' + Math.max(p.stats.best || 0, streakNow) + ' 天' });
 		if (s.top.length) {
 			const top = side.createEl('div', { text: '最常读：' });
 			top.addClass('hm-top');
@@ -1244,6 +1500,66 @@ class MuyunHeatmapModal extends Modal {
 			legend.createDiv('muyun-heat-cell' + (c ? ' ' + c : ''));
 		});
 		legend.createSpan({ text: '多' });
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
+/* ── v0.7 ① 继续阅读队列 Modal（D1：命令 + 状态栏 📖 双入口，无 ribbon） ── */
+class MuyunQueueModal extends Modal {
+	constructor(app, plugin) {
+		super(app);
+		this.plugin = plugin;
+	}
+
+	onOpen() { this.render(); }
+
+	render() {
+		const { contentEl } = this;
+		const p = this.plugin;
+		contentEl.empty();
+		contentEl.addClass('muyun-queue');
+		contentEl.createEl('h3', { text: '继续阅读 · Continue reading' });
+		contentEl.createEl('p', { text: '最近在读的笔记，点击回到上次的位置' }).addClass('muyun-queue-sub');
+
+		const items = Object.keys(p.store)
+			.map(function (k) { return { path: k, rec: p.store[k] }; })
+			.filter(function (it) { return it.rec.ts && it.rec.ratio != null && !(it.rec.done && it.rec.ratio > 0.97); })
+			.sort(function (a, b) { return b.rec.ts - a.rec.ts; })
+			.slice(0, 20);
+
+		if (!items.length) {
+			contentEl.createEl('p', { text: '最近没有在读的笔记' }).addClass('muyun-queue-empty');
+			return;
+		}
+
+		items.forEach(it => {
+			const row = contentEl.createDiv('muyun-q-row');
+			row.setAttribute('title', it.path);
+			const nm = row.createDiv('muyun-q-name');
+			nm.createSpan({ text: it.path.split('/').pop().replace(/\.md$/i, '') });
+			nm.createDiv({ text: it.path }).addClass('muyun-q-path');
+			const pct = Math.round((it.rec.ratio || 0) * 100);
+			const bar = row.createDiv('muyun-q-bar');
+			bar.createDiv('muyun-q-fill').style.width = pct + '%';
+			row.createDiv({ text: pct + '%' }).addClass('muyun-q-pct');
+			row.createDiv({ text: p.relTime(it.rec.ts) }).addClass('muyun-q-time');
+			const x = row.createEl('button', { cls: 'muyun-q-x' });
+			x.textContent = '✕';
+			x.setAttribute('aria-label', '移出队列');
+			x.addEventListener('click', e => {
+				e.stopPropagation();
+				delete p.store[it.path];
+				p.saveStoreSoon();
+				this.render();
+			});
+			row.addEventListener('click', () => {
+				this.close();
+				p.app.workspace.openLinkText(it.path, '');
+			});
+		});
 	}
 
 	onClose() {

@@ -167,3 +167,19 @@
 
 /* ── v0.6 每日目标达成标记 ── */
 .muyun-goal-done { color: var(--text-accent, #8a5cf5); }
+
+/* ── v0.7 继续阅读队列 / 热图 streak 头部 ── */
+.muyun-queue-sub { color: var(--text-muted); font-size: 12px; margin: 0 0 10px; }
+.muyun-queue-empty { color: var(--text-faint); text-align: center; padding: 24px 0; }
+.muyun-q-row { display: flex; align-items: center; gap: 10px; padding: 7px 6px; border-radius: 6px; cursor: pointer; }
+.muyun-q-row:hover { background: var(--background-modifier-hover, rgba(127, 127, 127, 0.1)); }
+.muyun-q-name { flex: 1; min-width: 0; font-size: 13px; }
+.muyun-q-name > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.muyun-q-path { font-size: 10px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.muyun-q-bar { width: 74px; height: 5px; border-radius: 3px; background: var(--background-modifier-border, rgba(127, 127, 127, 0.4)); overflow: hidden; flex: none; }
+.muyun-q-fill { height: 100%; background: var(--interactive-accent, #8a5cf5); }
+.muyun-q-pct { width: 36px; text-align: right; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; flex: none; }
+.muyun-q-time { width: 68px; text-align: right; font-size: 10.5px; color: var(--text-faint); flex: none; }
+.muyun-q-x { border: none; background: none; color: var(--text-faint); cursor: pointer; font-size: 12px; padding: 2px 4px; flex: none; }
+.muyun-q-row:hover .muyun-q-x { color: var(--text-normal); }
+.muyun-streak-head { font-size: 15px; margin: 2px 0 8px; color: var(--text-accent, #8a5cf5); }
