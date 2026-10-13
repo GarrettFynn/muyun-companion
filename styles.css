@@ -83,6 +83,17 @@
 	pointer-events: none;
 	z-index: 20;
 	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+	transition: top 0.12s ease;
+}
+/* ── v0.8.1 常显当前章节：比悬停预览收敛一档（半透明 + 模糊底 + 去投影） ── */
+.muyun-rail-tip.persist {
+	max-width: 200px;
+	opacity: 0.92;
+	background: color-mix(in srgb, var(--background-secondary, #20202a) 80%, transparent);
+	backdrop-filter: blur(4px);
+	border-color: color-mix(in srgb, var(--background-modifier-border, rgba(255, 255, 255, 0.1)) 65%, transparent);
+	box-shadow: none;
+	color: var(--text-muted, #999);
 }
 .status-bar .muyun-crumb {
 	color: var(--text-muted);

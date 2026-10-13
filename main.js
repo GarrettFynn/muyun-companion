@@ -1,6 +1,6 @@
 'use strict';
 
-/* MuYun Companion · v0.8.0
+/* MuYun Companion · v0.8.1
    MuYun 慕云主题的配套增强插件，承载主题（纯 CSS）无法实现的效果：
    H1 顶部阅读进度条（H2 章节刻度）/ H2 阅读聚光灯（默认关）/ H8 侧缘小地图点轨 /
    续读记忆 + 继续阅读队列 / 状态栏标题面包屑（可点击跳转）与剩余阅读时长 /
@@ -16,6 +16,7 @@
    超龄折入 months 月度归档不再丢弃）/周报导出（ISO 周号命名不覆盖）+ debugMode 热路径打点。
    v0.8.0：用户反馈轮——已阅读时长（⏱ 本次·本篇累计，替代与进度条重复的剩余估算；未开统计退回估算）、
    streak 移出状态栏（热图/周报保留）、队列升级（📌置顶 + 行内最近章节 + Ctrl 点击新窗格）。
+   v0.8.1：小地图常显当前章节——当前小节标签常驻当前圆点旁、随滚动跟随（悬停其他圆点时让位，设置可关）。
    样式走 Obsidian 标准 CSS 变量并带兜底值，任意主题可用，MuYun 下观感最佳。 */
 
 const { Plugin, PluginSettingTab, Setting, MarkdownView, Modal, Notice, debounce } = require('obsidian');
@@ -34,6 +35,7 @@ const DEFAULT_SETTINGS = {
 	progressTicks: true,    /* 进度条 H2 章节刻度 */
 	minimap: true,          /* H8 侧缘小地图点轨 */
 	minimapTrail: true,     /* 小地图已读轨迹着色 */
+	minimapLabel: true,     /* v0.8.1 常显当前章节标签 */
 	spotlight: false,       /* H2 阅读聚光灯（观感争议项，默认关） */
 	spotlightDim: 0.35,     /* 聚光灯暗度 */
 	resumeReading: true,    /* 续读记忆 */
@@ -917,6 +919,8 @@ class MuyunCompanionPlugin extends Plugin {
 		this.railHeads = [];
 		this.railTargets = null;
 		this.railSig = '';
+		this.railTip = null;
+		this._railHover = null;
 	}
 
 	buildRail() {
@@ -955,6 +959,8 @@ class MuyunCompanionPlugin extends Plugin {
 		if (this.railSig !== sig) {
 			this.railSig = sig;
 			this.railEl.innerHTML = '';
+			this.railTip = null;   /* 浮层随 innerHTML 一并销毁，引用同步置空 */
+			this._railHover = null;
 			this.railTargets = targets;
 			this.railHeads = targets.map(function (t) { return t.el; }).filter(Boolean);
 			const file = this.app.workspace.getActiveFile();
@@ -977,8 +983,8 @@ class MuyunCompanionPlugin extends Plugin {
 					}
 					self.pulseOutline();
 				});
-				b.addEventListener('mouseenter', function () { self.showRailTip(b, 'H' + t.level + ' · ' + txt); });
-				b.addEventListener('mouseleave', function () { self.showRailTip(null); });
+				b.addEventListener('mouseenter', function () { self._railHover = b; self.showRailTip(b, 'H' + t.level + ' · ' + txt); });
+				b.addEventListener('mouseleave', function () { self._railHover = null; self.updateRail(); });
 				self.railEl.appendChild(b);
 			});
 		}
@@ -1012,6 +1018,14 @@ class MuyunCompanionPlugin extends Plugin {
 			b.classList.toggle('cur', i === cur);
 			b.classList.toggle('read', trail && i <= maxRead && i !== cur);
 		});
+		/* v0.8.1 常显当前章节：无悬停时把标签钉在当前圆点旁（悬停优先，复用同一浮层） */
+		if (!this._railHover) {
+			if (this.settings.minimapLabel) {
+				this.showRailTip(dots[cur], 'H' + this.railTargets[cur].level + ' · ' + this.railTargets[cur].text, true);
+			} else if (this.railTip) {
+				this.showRailTip(null);
+			}
+		}
 		const file = this.app.workspace.getActiveFile();
 		if (file && this.store[file.path]) {
 			this.store[file.path].readIdx = maxRead;
@@ -1019,8 +1033,9 @@ class MuyunCompanionPlugin extends Plugin {
 		}
 	}
 
-	/* 悬停预览：圆点旁浮出「层级 · 标题」 */
-	showRailTip(anchor, text) {
+	/* 浮层：悬停预览「层级 · 标题」；persist = 常显当前章节（更收敛的一档样式）。
+	   文本与坐标做同值守卫，避免滚动热路径上每帧重排 */
+	showRailTip(anchor, text, persist) {
 		let tip = this.railTip;
 		if (!anchor) { if (tip) tip.remove(); this.railTip = null; return; }
 		if (!tip) {
@@ -1029,8 +1044,10 @@ class MuyunCompanionPlugin extends Plugin {
 			this.railEl.appendChild(tip);
 			this.railTip = tip;
 		}
-		tip.textContent = text;
-		tip.style.top = (anchor.offsetTop - 4) + 'px';
+		if (tip.textContent !== text) tip.textContent = text;
+		tip.classList.toggle('persist', !!persist);
+		const top = (anchor.offsetTop - 4) + 'px';
+		if (tip.style.top !== top) tip.style.top = top;
 	}
 
 	/* 小地图 ↔ 大纲联动：跳转后让大纲面板的当前项滚入视野（is-active 由核心大纲维护） */
@@ -1365,6 +1382,12 @@ class MuyunCompanionSettingTab extends PluginSettingTab {
 			.setDesc('已到达过的小节圆点变为实心亮色，进度持久保存。')
 			.addToggle(t => t.setValue(p.settings.minimapTrail)
 				.onChange(async v => { p.settings.minimapTrail = v; await p.saveSettings(); p.refresh(); }));
+
+		new Setting(containerEl)
+			.setName('小地图常显当前章节 · Show current section')
+			.setDesc('当前小节标题常驻在当前圆点旁、随滚动跟随；悬停其他圆点仍显示该节的悬停预览。')
+			.addToggle(t => t.setValue(p.settings.minimapLabel)
+				.onChange(async v => { p.settings.minimapLabel = v; await p.saveSettings(); p.updateRail(); }));
 
 		new Setting(containerEl)
 			.setName('续读记忆 · Resume reading')
