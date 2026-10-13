@@ -40,7 +40,7 @@
 - **Community directory 社区目录（推荐）**：Settings → Community plugins → Browse → search **"MuYun Companion"**（目录搜索同步有数小时延迟）。设置 → 第三方插件 → 浏览 → 搜索 MuYun Companion。
 - **Manual 手动安装**：Download `main.js`, `manifest.json`, `styles.css` from [Releases](https://github.com/GarrettFynn/muyun-companion/releases), put them into `<vault>/.obsidian/plugins/muyun-companion/`, then enable **MuYun Companion** in Settings → Community plugins and press `Ctrl+R` once. 从 [Releases](https://github.com/GarrettFynn/muyun-companion/releases) 下载三件套，放入库目录 `.obsidian/plugins/muyun-companion/`，在第三方插件设置中启用后按一次 `Ctrl+R`。
 - **BRAT（自动更新）**：Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) → Add Beta plugin → `GarrettFynn/muyun-companion`. 用 BRAT 添加 Beta 插件即可获得后续自动更新。
-- Optional: install [Style Settings](https://github.com/mgmeyers/obsidian-style-settings) — together with the MuYun theme it unlocks 12 companion options + 24 theme options. 可选：安装 Style Settings，配合 MuYun 主题解锁 12 项插件参数与 24 项主题参数。
+- **Style Settings（optional 可选）**：install it from the community directory — Settings → Community plugins → Browse → search **"Style Settings"** → Install & enable; then open Settings → **Style Settings** → **MuYun** section. Together with the MuYun theme it unlocks 12 companion visual options + 24 theme options (without the MuYun theme this adds nothing). 社区目录安装：设置 → 第三方插件 → 浏览 → 搜索 **Style Settings** 安装并启用，再到 设置 → **Style Settings** → **MuYun** 分组调整；配合 MuYun 主题解锁 12 项插件视觉参数与 24 项主题参数（不装 MuYun 主题则无额外选项）。
 
 ## Settings 设置
 
