@@ -1,6 +1,6 @@
 'use strict';
 
-/* MuYun Companion · v0.6.0
+/* MuYun Companion · v0.6.1
    MuYun 慕云主题的配套增强插件，承载主题（纯 CSS）无法实现的效果：
    H1 顶部阅读进度条（v0.6 起 H2 章节刻度）/ H2 阅读聚光灯（默认关）/ H8 侧缘小地图点轨 /
    续读记忆 / 状态栏标题面包屑（v0.6 起各级可点击跳转）与剩余阅读时长 /
@@ -10,6 +10,7 @@
    纯 JavaScript（无构建链），CommonJS 引用运行时 obsidian 模块。
    v0.5.1：用户数据（设置/续读位置/轨迹/统计）统一存 data.json（随库隔离），
    旧版 localStorage 数据首次启动时自动迁入。
+   v0.6.1：面包屑折叠目标先展开再落点、进度条刻度悬停章节名、打字机锚点切换即时重锚。
    样式走 Obsidian 标准 CSS 变量并带兜底值，任意主题可用，MuYun 下观感最佳。 */
 
 const { Plugin, PluginSettingTab, Setting, MarkdownView, Modal, Notice, debounce } = require('obsidian');
@@ -495,6 +496,7 @@ class MuyunCompanionPlugin extends Plugin {
 				const t = document.createElement('div');
 				t.className = 'muyun-progress-tick';
 				t.style.left = (frac * 100).toFixed(2) + '%';
+				t.title = h.text || '';   /* v0.6.1 悬停显示章节名 */
 				frag.appendChild(t);
 			}
 		});
@@ -923,7 +925,19 @@ class MuyunCompanionPlugin extends Plugin {
 				const seg = this.crumbEl.createSpan({ text: showParts[i], cls: 'muyun-crumb-seg' });
 				seg.addEventListener('click', e => {
 					e.stopPropagation();
-					if (c.el && c.el.isConnected) c.el.scrollIntoView({ block: 'start', behavior: smooth });
+					if (c.el && c.el.isConnected && c.el.offsetHeight) {
+						c.el.scrollIntoView({ block: 'start', behavior: smooth });
+						return;
+					}
+					/* v0.6.1 目标已被折叠收起：按标题文本回源行，先展开再落点（阅读视图无折叠，走不到这里） */
+					const view = this.activeMarkdownView();
+					if (!view || !view.editor) return;
+					const want = '#'.repeat(Math.min(6, Math.max(1, c.level || 2))) + ' ' + (c.text || '');
+					const lines = view.editor.getValue().split('\n');
+					const idx = lines.findIndex(function (l) { return l.trim() === want; });
+					if (idx < 0) return;
+					view.editor.unfold(idx);
+					view.editor.setCursor({ line: idx, ch: 0 });
 				});
 			});
 			this.crumbEl.setAttribute('title', text);
@@ -1143,7 +1157,13 @@ class MuyunCompanionSettingTab extends PluginSettingTab {
 				.addOption('third', '上三分之一 · Upper third')
 				.addOption('half', '屏幕中线 · Middle')
 				.setValue(p.settings.typewriterAnchor)
-				.onChange(async v => { p.settings.typewriterAnchor = v; await p.saveSettings(); }));
+				.onChange(async v => {
+					p.settings.typewriterAnchor = v;
+					await p.saveSettings();
+					/* v0.6.1 切换即时重锚，不必等下次光标移动 */
+					const av = p.activeMarkdownView();
+					if (av && av.editor && av.editor.cmEditor) p.typewriterScroll(av.editor.cmEditor);
+				}));
 
 		new Setting(containerEl)
 			.setName('折叠平滑展开 · Smooth folding')
