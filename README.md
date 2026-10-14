@@ -18,7 +18,7 @@
 | Feature 功能 | Default 默认 | What it does 说明 |
 | --- | --- | --- |
 | Reading progress bar 阅读进度条 | On 开 | 4px gradient bar at the top, follows scrolling; thin ticks mark H2 chapter boundaries. 顶部 4px 渐变细条，随滚动显示读到哪了；细刻度标出 H2 章节边界 |
-| Edge minimap 侧缘小地图 | On 开 | Heading dot-rail on the right; tracks scrolling (reading) or cursor (live preview); click to jump; read trail persisted; the current section's label stays pinned beside the active dot (toggleable). 右缘标题点轨，阅读态随滚动、编辑态随光标，点击跳转，已读轨迹持久化；当前小节标签常驻当前圆点旁随滚动跟随（可在设置关闭） |
+| Edge minimap 侧缘小地图 | On 开 | Heading dot-rail on the right; tracks scrolling (reading) or cursor (live preview; falls back to the visible top while the cursor is scrolled away); click to jump; read trail persisted; the current section's label stays pinned beside the active dot (toggleable). 右缘标题点轨，阅读态随滚动、编辑态随光标（光标滚出视野时随滚动），点击跳转，已读轨迹持久化；当前小节标签常驻当前圆点旁随滚动跟随（可在设置关闭） |
 | Reading spotlight 阅读聚光灯 | Off 关 | Current section lit, others dimmed — scroll-driven in reading view, cursor-driven in live preview. 当前小节全亮其余降透明：阅读态跟滚动、实时预览跟光标 |
 | Resume reading 续读记忆 | On 开 | Reopens each note at the position you left (LRU 400 notes). 每篇笔记记住上次读到的位置 |
 | Reading tray 继续阅读队列 | — | Command or status-bar 📖 click opens recently-read notes with position, progress & last chapter; one click jumps back, 📌 pins, Ctrl+click opens in a new pane. 命令或点击状态栏 📖 打开在读列表（含进度与最近章节），一键回到上次位置，可置顶、Ctrl+点击新窗格打开 |

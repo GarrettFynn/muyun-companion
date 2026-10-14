@@ -1,6 +1,6 @@
 'use strict';
 
-/* MuYun Companion · v0.8.1
+/* MuYun Companion · v0.8.2
    MuYun 慕云主题的配套增强插件，承载主题（纯 CSS）无法实现的效果：
    H1 顶部阅读进度条（H2 章节刻度）/ H2 阅读聚光灯（默认关）/ H8 侧缘小地图点轨 /
    续读记忆 + 继续阅读队列 / 状态栏标题面包屑（可点击跳转）与剩余阅读时长 /
@@ -17,6 +17,7 @@
    v0.8.0：用户反馈轮——已阅读时长（⏱ 本次·本篇累计，替代与进度条重复的剩余估算；未开统计退回估算）、
    streak 移出状态栏（热图/周报保留）、队列升级（📌置顶 + 行内最近章节 + Ctrl 点击新窗格）。
    v0.8.1：小地图常显当前章节——当前小节标签常驻当前圆点旁、随滚动跟随（悬停其他圆点时让位，设置可关）。
+   v0.8.2：实时预览里光标滚出视野时，小地图/常显标签改按可视顶部行定位——滚轮阅读也随滚动（光标在视野内仍随光标）。
    样式走 Obsidian 标准 CSS 变量并带兜底值，任意主题可用，MuYun 下观感最佳。 */
 
 const { Plugin, PluginSettingTab, Setting, MarkdownView, Modal, Notice, debounce } = require('obsidian');
@@ -1005,7 +1006,20 @@ class MuyunCompanionPlugin extends Plugin {
 			});
 		} else {
 			try {
-				const cl = view.editor.getCursor().line;
+				const ed = view.editor;
+				let cl = ed.getCursor().line;
+				/* v0.8.2：实时预览里光标滚出视野时改按可视顶部行定位当前节——
+				   滚轮阅读也能推动小地图与常显标签；光标在视野内时行为不变（随光标） */
+				const cm = ed.cmEditor;
+				if (cm && typeof cm.posAtCoords === 'function' && typeof cm.coordsAtPos === 'function'
+					&& typeof ed.posToOffset === 'function' && typeof ed.offsetToPos === 'function') {
+					const curVisible = cm.coordsAtPos(ed.posToOffset(ed.getCursor()));
+					if (!curVisible && cm.scrollDOM) {
+						const r = cm.scrollDOM.getBoundingClientRect();
+						const topPos = cm.posAtCoords({ x: r.left + 8, y: r.top + 4 }, false);
+						if (typeof topPos === 'number') cl = ed.offsetToPos(topPos).line;
+					}
+				}
 				this.railTargets.forEach(function (t, i) { if (t.line <= cl) cur = i; });
 			} catch (e) { /* 光标暂不可得时保持原状 */ }
 		}
@@ -1373,7 +1387,7 @@ class MuyunCompanionSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('侧缘小地图 · Edge minimap (H8)')
-			.setDesc('右缘标题点轨：阅读视图随滚动、实时预览随光标；点击圆点跳转。')
+			.setDesc('右缘标题点轨：阅读视图随滚动、实时预览随光标（滚出视野时随滚动）；点击圆点跳转。')
 			.addToggle(t => t.setValue(p.settings.minimap)
 				.onChange(async v => { p.settings.minimap = v; await p.saveSettings(); }));
 
