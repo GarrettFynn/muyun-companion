@@ -1,6 +1,6 @@
 'use strict';
 
-/* MuYun Companion · v0.8.2
+/* MuYun Companion · v0.8.3
    MuYun 慕云主题的配套增强插件，承载主题（纯 CSS）无法实现的效果：
    H1 顶部阅读进度条（H2 章节刻度）/ H2 阅读聚光灯（默认关）/ H8 侧缘小地图点轨 /
    续读记忆 + 继续阅读队列 / 状态栏标题面包屑（可点击跳转）与剩余阅读时长 /
@@ -18,6 +18,8 @@
    streak 移出状态栏（热图/周报保留）、队列升级（📌置顶 + 行内最近章节 + Ctrl 点击新窗格）。
    v0.8.1：小地图常显当前章节——当前小节标签常驻当前圆点旁、随滚动跟随（悬停其他圆点时让位，设置可关）。
    v0.8.2：实时预览里光标滚出视野时，小地图/常显标签改按可视顶部行定位——滚轮阅读也随滚动（光标在视野内仍随光标）。
+   v0.8.3：点轨密度自适应（>40 章缩点径、>80 再缩，间隙按可用高度动态压）杜绝标题多时上下溢出被裁；
+   浮层宽度上限放宽（悬停 380px / 常显 420px，按 vw 封顶），长标题不再过早省略。
    样式走 Obsidian 标准 CSS 变量并带兜底值，任意主题可用，MuYun 下观感最佳。 */
 
 const { Plugin, PluginSettingTab, Setting, MarkdownView, Modal, Notice, debounce } = require('obsidian');
@@ -988,6 +990,15 @@ class MuyunCompanionPlugin extends Plugin {
 				b.addEventListener('mouseleave', function () { self._railHover = null; self.updateRail(); });
 				self.railEl.appendChild(b);
 			});
+			/* v0.8.3 密度自适应：轨道高度固定（上下各留 12%），标题多时压缩点径与间距，
+			   保证每个标题都有可见圆点（点轨即完整大纲），间隙按可用高度动态计算 */
+			const tier = targets.length > 80 ? 'micro' : (targets.length > 40 ? 'dense' : '');
+			this.railEl.classList.toggle('dense', tier === 'dense');
+			this.railEl.classList.toggle('micro', tier === 'micro');
+			const dotH = tier === 'micro' ? 3 : (tier === 'dense' ? 5 : 8);
+			const gapRaw = Math.max(1.5, Math.min(9,
+				(this.railEl.clientHeight - targets.length * dotH) / Math.max(1, targets.length - 1)));
+			this.railEl.style.gap = (Math.floor(gapRaw * 10) / 10) + 'px';
 		}
 		this.updateRail();
 	}

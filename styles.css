@@ -50,6 +50,11 @@
 	transition: opacity 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
 }
 .muyun-rail-dot.lvl1 { width: 10px; height: 10px; }
+/* ── v0.8.3 密度分档：标题多时缩点径防溢出裁切（>40 dense / >80 micro） ── */
+.muyun-rail.dense .muyun-rail-dot { width: 5px; height: 5px; }
+.muyun-rail.dense .muyun-rail-dot.lvl1 { width: 7px; height: 7px; }
+.muyun-rail.micro .muyun-rail-dot { width: 3px; height: 3px; }
+.muyun-rail.micro .muyun-rail-dot.lvl1 { width: 5px; height: 5px; }
 .muyun-rail-dot:hover { opacity: 0.8; }
 .muyun-rail-dot.cur {
 	opacity: 1;
@@ -70,7 +75,7 @@
 .muyun-rail-tip {
 	position: absolute;
 	right: 16px;
-	max-width: 260px;
+	max-width: min(56vw, 460px);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -87,7 +92,7 @@
 }
 /* ── v0.8.1 常显当前章节：比悬停预览收敛一档（半透明 + 模糊底 + 去投影） ── */
 .muyun-rail-tip.persist {
-	max-width: 200px;
+	max-width: min(60vw, 480px);
 	opacity: 0.92;
 	background: color-mix(in srgb, var(--background-secondary, #20202a) 80%, transparent);
 	backdrop-filter: blur(4px);
