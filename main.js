@@ -1,6 +1,6 @@
 'use strict';
 
-/* MuYun Companion · v0.8.3
+/* MuYun Companion · v0.8.4
    MuYun 慕云主题的配套增强插件，承载主题（纯 CSS）无法实现的效果：
    H1 顶部阅读进度条（H2 章节刻度）/ H2 阅读聚光灯（默认关）/ H8 侧缘小地图点轨 /
    续读记忆 + 继续阅读队列 / 状态栏标题面包屑（可点击跳转）与剩余阅读时长 /
@@ -20,6 +20,8 @@
    v0.8.2：实时预览里光标滚出视野时，小地图/常显标签改按可视顶部行定位——滚轮阅读也随滚动（光标在视野内仍随光标）。
    v0.8.3：点轨密度自适应（>40 章缩点径、>80 再缩，间隙按可用高度动态压）杜绝标题多时上下溢出被裁；
    浮层宽度上限放宽（悬停 380px / 常显 420px，按 vw 封顶），长标题不再过早省略。
+   v0.8.4：CDP 真机两修——①密度按「可用高度」分档且窗口 resize 重算（v0.8.3 只按章节数，小窗格照样裁）；
+   ②编辑态可视顶部行改用官方 Editor API（coordsAtPos 判出视野 + scrollTop 占比估行；cmEditor 在 1.14 已混淆为 undefined）。
    样式走 Obsidian 标准 CSS 变量并带兜底值，任意主题可用，MuYun 下观感最佳。 */
 
 const { Plugin, PluginSettingTab, Setting, MarkdownView, Modal, Notice, debounce } = require('obsidian');
@@ -167,7 +169,7 @@ class MuyunCompanionPlugin extends Plugin {
 			this.refreshSoft();
 			this.computeReadTime();
 		}, 800, true)));
-		this.registerDomEvent(window, 'resize', () => { this._spotCache = null; this.updateProgress(); this.renderBarTicks(); });
+		this.registerDomEvent(window, 'resize', () => { this._spotCache = null; this.updateProgress(); this.renderBarTicks(); this.fitRailDensity(); });
 		this.registerDomEvent(document, 'scroll', () => this.onScroll(), { capture: true, passive: true });
 
 		this.refresh();
@@ -931,22 +933,16 @@ class MuyunCompanionPlugin extends Plugin {
 		if (!this.settings.minimap || !view) { this.clearRail(); return; }
 		if (this.railEl && this.railEl.parentElement !== view.contentEl) this.clearRail();
 
-		/* 目标解析：阅读态 = 标题元素（跟随滚动）；实时预览 = metadataCache 标题行（跟随光标） */
-		let targets;
-		if (view.getMode() === 'preview') {
-			const previewEl = view.contentEl.querySelector('.markdown-preview-view');
-			if (!previewEl) { this.clearRail(); return; }
-			targets = Array.from(previewEl.querySelectorAll(HEADING_SEL)).map(function (h) {
-				return { el: h, line: null, level: +h.tagName[1], text: (h.textContent || '').trim() };
-			});
-		} else {
-			const file = this.app.workspace.getActiveFile();
-			const cache = file ? this.app.metadataCache.getFileCache(file) : null;
-			const hs = cache && cache.headings ? cache.headings : [];
-			targets = hs.map(function (h) {
-				return { el: null, line: h.position.start.line, level: h.level, text: h.heading || '' };
-			});
-		}
+		/* v0.8.4：目标一律取 metadataCache 完整标题表——阅读视图长文是虚拟化渲染，
+		   DOM 只含可视窗附近的标题（实测 32 章只渲染出 8 个圆点），按 DOM 取会缺章；
+		   编辑态本就取 metadataCache。已渲染元素由 updateRail 按（层级+文本）双指针现场映射回下标 */
+		if (view.getMode() === 'preview' && !view.contentEl.querySelector('.markdown-preview-view')) { this.clearRail(); return; }
+		const file = this.app.workspace.getActiveFile();
+		const cache = file ? this.app.metadataCache.getFileCache(file) : null;
+		const hs = cache && cache.headings ? cache.headings : [];
+		const targets = hs.map(function (h) {
+			return { el: null, line: h.position.start.line, level: h.level, text: h.heading || '' };
+		});
 		if (!targets.length) { this.clearRail(); return; }
 
 		if (!this.railEl) {
@@ -965,8 +961,6 @@ class MuyunCompanionPlugin extends Plugin {
 			this.railTip = null;   /* 浮层随 innerHTML 一并销毁，引用同步置空 */
 			this._railHover = null;
 			this.railTargets = targets;
-			this.railHeads = targets.map(function (t) { return t.el; }).filter(Boolean);
-			const file = this.app.workspace.getActiveFile();
 			const rec = file ? this.store[file.path] : null;
 			this.railMaxRead = rec && typeof rec.readIdx === 'number' ? rec.readIdx : -1;
 			const self = this;
@@ -976,31 +970,41 @@ class MuyunCompanionPlugin extends Plugin {
 				const txt = t.text;
 				b.setAttribute('aria-label', txt.slice(0, 48));
 				b.addEventListener('click', function () {
-					if (t.el) {
-						t.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+					if (view.getMode() === 'preview') {
+						self.scrollPreviewTo(view, t);
 					} else {
 						try {
 							view.editor.setCursor({ line: t.line, ch: 0 });
 							view.editor.scrollIntoView({ from: { line: t.line, ch: 0 }, to: { line: t.line, ch: 0 } }, true);
 						} catch (e) { /* 编辑器不可用时静默 */ }
+						self.pulseOutline();
 					}
-					self.pulseOutline();
 				});
 				b.addEventListener('mouseenter', function () { self._railHover = b; self.showRailTip(b, 'H' + t.level + ' · ' + txt); });
 				b.addEventListener('mouseleave', function () { self._railHover = null; self.updateRail(); });
 				self.railEl.appendChild(b);
 			});
-			/* v0.8.3 密度自适应：轨道高度固定（上下各留 12%），标题多时压缩点径与间距，
-			   保证每个标题都有可见圆点（点轨即完整大纲），间隙按可用高度动态计算 */
-			const tier = targets.length > 80 ? 'micro' : (targets.length > 40 ? 'dense' : '');
-			this.railEl.classList.toggle('dense', tier === 'dense');
-			this.railEl.classList.toggle('micro', tier === 'micro');
-			const dotH = tier === 'micro' ? 3 : (tier === 'dense' ? 5 : 8);
-			const gapRaw = Math.max(1.5, Math.min(9,
-				(this.railEl.clientHeight - targets.length * dotH) / Math.max(1, targets.length - 1)));
-			this.railEl.style.gap = (Math.floor(gapRaw * 10) / 10) + 'px';
 		}
+		this.fitRailDensity();
 		this.updateRail();
+	}
+
+	/* v0.8.4 密度按「可用高度」自适应：标准点径放不下逐档缩小（dense 5px / micro 3px），
+	   间隙随剩余空间动态压缩、兜底到 0；窗格尺寸变化时由 resize 钩子重算。
+	   此前只在建轨时按章节数分档（>40/>80），小窗格 + 中等章数照样溢出被裁 */
+	fitRailDensity() {
+		if (!this.railEl || !this.railTargets || !this.railTargets.length) return;
+		const n = this.railTargets.length;
+		const avail = this.railEl.clientHeight;
+		let tier = '', dotH = 8;
+		if (n * 8 + (n - 1) * 1.5 > avail) { tier = 'dense'; dotH = 5; }
+		if (n * 5 + (n - 1) * 1.5 > avail) { tier = 'micro'; dotH = 3; }
+		this.railEl.classList.toggle('dense', tier === 'dense');
+		this.railEl.classList.toggle('micro', tier === 'micro');
+		let gap = (avail - n * dotH) / Math.max(1, n - 1);
+		if (gap > 9) gap = 9;
+		if (gap < 0) gap = 0;
+		this.railEl.style.gap = (Math.floor(gap * 10) / 10) + 'px';
 	}
 
 	updateRail() {
@@ -1012,23 +1016,35 @@ class MuyunCompanionPlugin extends Plugin {
 			const previewEl = view.contentEl.querySelector('.markdown-preview-view');
 			if (!previewEl) return;
 			const baseTop = previewEl.getBoundingClientRect().top;
-			this.railTargets.forEach(function (t, i) {
-				if (t.el && t.el.getBoundingClientRect().top - baseTop <= previewEl.clientHeight * 0.35) cur = i;
+			const th = previewEl.clientHeight * 0.35;
+			/* 虚拟化渲染：DOM 标题是全表的一段连续窗口，双指针按（层级+文本）单调映射回下标 */
+			const rendered = previewEl.querySelectorAll(HEADING_SEL);
+			const tg = this.railTargets;
+			let j = 0;
+			rendered.forEach(function (h) {
+				const lvl = +h.tagName[1];
+				const txt = (h.textContent || '').trim();
+				while (j < tg.length && !(tg[j].level === lvl && tg[j].text === txt)) j++;
+				if (j >= tg.length) return;
+				if (h.getBoundingClientRect().top - baseTop <= th) cur = j;
 			});
 		} else {
 			try {
 				const ed = view.editor;
 				let cl = ed.getCursor().line;
-				/* v0.8.2：实时预览里光标滚出视野时改按可视顶部行定位当前节——
-				   滚轮阅读也能推动小地图与常显标签；光标在视野内时行为不变（随光标） */
-				const cm = ed.cmEditor;
-				if (cm && typeof cm.posAtCoords === 'function' && typeof cm.coordsAtPos === 'function'
-					&& typeof ed.posToOffset === 'function' && typeof ed.offsetToPos === 'function') {
-					const curVisible = cm.coordsAtPos(ed.posToOffset(ed.getCursor()));
-					if (!curVisible && cm.scrollDOM) {
-						const r = cm.scrollDOM.getBoundingClientRect();
-						const topPos = cm.posAtCoords({ x: r.left + 8, y: r.top + 4 }, false);
-						if (typeof topPos === 'number') cl = ed.offsetToPos(topPos).line;
+				/* v0.8.4：光标滚出视野时按可视顶部行定位当前节（滚轮阅读也随滚动）。
+				   只用官方 Editor API：coordsAtPos 判光标是否在视野（null/越界均为出视野），
+				   可视顶部行用 scrollTop 占比估算（标题间距大，±2 行无感）；
+				   0.8.2 的 cmEditor 路径在 Obsidian 1.14 已混淆为 undefined，弃用 */
+				const scr = view.contentEl.querySelector('.cm-scroller');
+				if (scr && typeof ed.coordsAtPos === 'function' && typeof ed.lastLine === 'function') {
+					const r = scr.getBoundingClientRect();
+					const c = ed.coordsAtPos(ed.getCursor());
+					const offscreen = !c || c.top < r.top - 8 || (c.bottom || c.top) > r.bottom + 8;
+					if (offscreen && scr.scrollHeight > scr.clientHeight) {
+						const total = ed.lastLine() + 1;
+						cl = Math.max(0, Math.min(total - 1,
+							Math.round(scr.scrollTop / scr.scrollHeight * total)));
 					}
 				}
 				this.railTargets.forEach(function (t, i) { if (t.line <= cl) cur = i; });
@@ -1056,6 +1072,39 @@ class MuyunCompanionPlugin extends Plugin {
 			this.store[file.path].readIdx = maxRead;
 			this.saveStoreSoon();
 		}
+	}
+
+	/* v0.8.4 阅读视图点击跳转（虚拟化渲染两段式）：目标标题可能尚未渲染进 DOM——
+	   先按行占比粗滚，等渲染落地后再按层级+文本精滚到元素 */
+	scrollPreviewTo(view, t) {
+		const previewEl = view.contentEl.querySelector('.markdown-preview-view');
+		if (!previewEl) return;
+		let total = 0;
+		try { total = view.editor.lastLine() + 1; } catch (e) { total = t.line + 1; }
+		const max = previewEl.scrollHeight - previewEl.clientHeight;
+		previewEl.scrollTo({
+			top: Math.max(0, Math.min(max, t.line / Math.max(1, total) * previewEl.scrollHeight)),
+			behavior: 'smooth'
+		});
+		/* 粗滚是平滑动画，中途按「最近同文」匹配会拽回半路上的重复标题——
+		   等 scrollend（动画真正结束）再精滚，900ms 兜底（已在目标位时不触发事件） */
+		let refined = false;
+		const refine = () => {
+			if (refined) return;
+			refined = true;
+			const els = previewEl.querySelectorAll(HEADING_SEL);
+			let best = null, bestD = Infinity;
+			const mid = previewEl.getBoundingClientRect().top + previewEl.clientHeight / 2;
+			for (let i = 0; i < els.length; i++) {
+				if (+els[i].tagName[1] !== t.level || (els[i].textContent || '').trim() !== t.text) continue;
+				const d = Math.abs(els[i].getBoundingClientRect().top - mid);
+				if (d < bestD) { bestD = d; best = els[i]; }
+			}
+			if (best) best.scrollIntoView({ behavior: 'smooth', block: 'start' });
+			this.pulseOutline();
+		};
+		previewEl.addEventListener('scrollend', refine, { once: true });
+		setTimeout(refine, 900);
 	}
 
 	/* 浮层：悬停预览「层级 · 标题」；persist = 常显当前章节（更收敛的一档样式）。
