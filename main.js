@@ -1,6 +1,6 @@
 'use strict';
 
-/* MuYun Companion · v0.8.4
+/* MuYun Companion · v0.8.5
    MuYun 慕云主题的配套增强插件，承载主题（纯 CSS）无法实现的效果：
    H1 顶部阅读进度条（H2 章节刻度）/ H2 阅读聚光灯（默认关）/ H8 侧缘小地图点轨 /
    续读记忆 + 继续阅读队列 / 状态栏标题面包屑（可点击跳转）与剩余阅读时长 /
@@ -22,6 +22,7 @@
    浮层宽度上限放宽（悬停 380px / 常显 420px，按 vw 封顶），长标题不再过早省略。
    v0.8.4：CDP 真机两修——①密度按「可用高度」分档且窗口 resize 重算（v0.8.3 只按章节数，小窗格照样裁）；
    ②编辑态可视顶部行改用官方 Editor API（coordsAtPos 判出视野 + scrollTop 占比估行；cmEditor 在 1.14 已混淆为 undefined）。
+   v0.8.5：标签→圆点指向箭头（浮层右缘 7px 三角，常显/悬停两态同配），标签一眼锚定对应圆点。
    样式走 Obsidian 标准 CSS 变量并带兜底值，任意主题可用，MuYun 下观感最佳。 */
 
 const { Plugin, PluginSettingTab, Setting, MarkdownView, Modal, Notice, debounce } = require('obsidian');
