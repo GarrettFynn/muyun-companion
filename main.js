@@ -1,6 +1,6 @@
 'use strict';
 
-/* MuYun Companion · v0.8.5
+/* MuYun Companion · v0.8.6
    MuYun 慕云主题的配套增强插件，承载主题（纯 CSS）无法实现的效果：
    H1 顶部阅读进度条（H2 章节刻度）/ H2 阅读聚光灯（默认关）/ H8 侧缘小地图点轨 /
    续读记忆 + 继续阅读队列 / 状态栏标题面包屑（可点击跳转）与剩余阅读时长 /
@@ -23,6 +23,8 @@
    v0.8.4：CDP 真机两修——①密度按「可用高度」分档且窗口 resize 重算（v0.8.3 只按章节数，小窗格照样裁）；
    ②编辑态可视顶部行改用官方 Editor API（coordsAtPos 判出视野 + scrollTop 占比估行；cmEditor 在 1.14 已混淆为 undefined）。
    v0.8.5：标签→圆点指向箭头（浮层右缘 7px 三角，常显/悬停两态同配），标签一眼锚定对应圆点。
+   v0.8.6：CDP 长文复现两修——①metadataCache 未解析时不清轨（长文首开 cache 迟到曾把点轨整条清掉），
+   并订阅 resolved 事件补刷新；②标题行内标记归一（加粗、行内代码、高亮、双链别名的原文与渲染文本不一致）。
    样式走 Obsidian 标准 CSS 变量并带兜底值，任意主题可用，MuYun 下观感最佳。 */
 
 const { Plugin, PluginSettingTab, Setting, MarkdownView, Modal, Notice, debounce } = require('obsidian');
@@ -70,6 +72,17 @@ const STATS_SESS_GAP_MS = 600000; /* v0.7 会话归并间隔：≤10min 的两�
 
 function isHeadingBlock(el) {
 	return el.matches(HEADING_SEL) || !!el.querySelector(HEADING_SCOPE_SEL);
+}
+
+/* v0.8.6 行内标记归一：metadataCache 的 heading 是原始 markdown，与阅读视图渲染后的
+   textContent 不一致（加粗、行内代码、高亮、双链别名等标记）——匹配与显示统一用归一文本 */
+function stripInlineMd(s) {
+	return s
+		.replace(/\[\[[^\]|]*\|([^\]]*)\]\]/g, '$1')
+		.replace(/\[\[([^\]]*)\]\]/g, '$1')
+		.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+		.replace(/(\*\*|==|~~|`|\*)/g, '')
+		.trim();
 }
 
 class MuyunCompanionPlugin extends Plugin {
@@ -161,6 +174,8 @@ class MuyunCompanionPlugin extends Plugin {
 
 		this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.refresh()));
 		this.registerEvent(this.app.workspace.on('layout-change', debounce(() => this.refresh(), 150, true)));
+		/* v0.8.6：cache 就绪后补一次刷新（配合 buildRail 的「未解析不清轨」） */
+		this.registerEvent(this.app.metadataCache.on('resolved', debounce(() => this.refresh(), 150, true)));
 		this.registerEvent(this.app.workspace.on('file-open', file => {
 			this.restoreFor(file);
 			this.computeReadTime();
@@ -919,6 +934,8 @@ class MuyunCompanionPlugin extends Plugin {
 	/* ═══ H8 侧缘小地图点轨（仅阅读视图；跟随滚动 + 点击跳转 + 已读轨迹 + 悬停预览） ═══ */
 	clearRail() {
 		if (this.railEl) this.railEl.remove();
+		if (this._railMo) { this._railMo.disconnect(); this._railMo = null; }
+		this._railMoView = null;
 		if (this.railView) this.railView.contentEl.classList.remove('muyun-has-rail');
 		this.railEl = null;
 		this.railView = null;
@@ -927,6 +944,7 @@ class MuyunCompanionPlugin extends Plugin {
 		this.railSig = '';
 		this.railTip = null;
 		this._railHover = null;
+		this._railPrevCur = null;
 	}
 
 	buildRail() {
@@ -940,9 +958,12 @@ class MuyunCompanionPlugin extends Plugin {
 		if (view.getMode() === 'preview' && !view.contentEl.querySelector('.markdown-preview-view')) { this.clearRail(); return; }
 		const file = this.app.workspace.getActiveFile();
 		const cache = file ? this.app.metadataCache.getFileCache(file) : null;
-		const hs = cache && cache.headings ? cache.headings : [];
+		/* v0.8.6：cache 未解析（null）时不清轨、保留现状——长文首开 cache 常迟到，
+		   此前 targets 为空直接 clearRail 后再无事件触发重建，整条点轨就此消失 */
+		if (!cache) return;
+		const hs = cache.headings || [];
 		const targets = hs.map(function (h) {
-			return { el: null, line: h.position.start.line, level: h.level, text: h.heading || '' };
+			return { el: null, line: h.position.start.line, level: h.level, text: stripInlineMd(h.heading || '') };
 		});
 		if (!targets.length) { this.clearRail(); return; }
 
@@ -962,6 +983,14 @@ class MuyunCompanionPlugin extends Plugin {
 			this.railTip = null;   /* 浮层随 innerHTML 一并销毁，引用同步置空 */
 			this._railHover = null;
 			this.railTargets = targets;
+			/* 层级+文本 → 下标列表：重复标题（多模型同文小节）按「离上次位置最近」消歧 */
+			this._railIdx = new Map();
+			targets.forEach(function (t, ti) {
+				t.idx = ti;
+				const key = t.level + '¦' + t.text;
+				const arr = this._railIdx.get(key);
+				if (arr) arr.push(ti); else this._railIdx.set(key, [ti]);
+			}, this);
 			const rec = file ? this.store[file.path] : null;
 			this.railMaxRead = rec && typeof rec.readIdx === 'number' ? rec.readIdx : -1;
 			const self = this;
@@ -988,21 +1017,56 @@ class MuyunCompanionPlugin extends Plugin {
 		}
 		this.fitRailDensity();
 		this.updateRail();
+		this.observePreviewRender(view);
+	}
+
+	/* v0.8.6：阅读视图虚拟化渲染在滚动停止后仍会异步补块，仅靠 scroll 事件更新会停在过渡态
+	   （标签停在上一节甚至文档标题）——观察预览容器子树变更，去抖后补一次 updateRail */
+	observePreviewRender(view) {
+		if (this._railMoView === view) return;
+		if (this._railMo) this._railMo.disconnect();
+		this._railMo = null;
+		this._railMoView = null;
+		const previewEl = view.contentEl.querySelector('.markdown-preview-view');
+		if (!previewEl) return;
+		this._railMo = new MutationObserver(debounce(() => {
+			if (this.railEl && this.railView === view) this.updateRail();
+		}, 120, true));
+		this._railMo.observe(previewEl, { childList: true, subtree: true });
+		this._railMoView = view;
 	}
 
 	/* v0.8.4 密度按「可用高度」自适应：标准点径放不下逐档缩小（dense 5px / micro 3px），
 	   间隙随剩余空间动态压缩、兜底到 0；窗格尺寸变化时由 resize 钩子重算。
-	   此前只在建轨时按章节数分档（>40/>80），小窗格 + 中等章数照样溢出被裁 */
+	   v0.8.6 压力测试补充：micro 仍放不下（338 标题实测被 flex 静默压成 1.6px 细条）时，
+	   逐级收缩层级（隐藏最深标题层，H1/H2 骨架常显）；cur/标签仍按真实当前标题计算 */
 	fitRailDensity() {
 		if (!this.railEl || !this.railTargets || !this.railTargets.length) return;
-		const n = this.railTargets.length;
 		const avail = this.railEl.clientHeight;
-		let tier = '', dotH = 8;
-		if (n * 8 + (n - 1) * 1.5 > avail) { tier = 'dense'; dotH = 5; }
-		if (n * 5 + (n - 1) * 1.5 > avail) { tier = 'micro'; dotH = 3; }
+		const tg = this.railTargets;
+		/* 点径与 CSS 分档严格镜像（lvl1 恒大一档），需求高度按层级求和——
+		   按统一点径估算会漏掉 lvl1 的差额（400 标题实测溢出 39px） */
+		const dotHOf = (lvl, tier) => lvl === 1
+			? (tier === 'micro' ? 5 : tier === 'dense' ? 7 : 10)
+			: (tier === 'micro' ? 3 : tier === 'dense' ? 5 : 8);
+		const sumH = (list, tier) => list.reduce((s, t) => s + dotHOf(t.level, tier), 0);
+		const fits = (list, tier, minGap) => list.length > 0 && sumH(list, tier) + (list.length - 1) * minGap <= avail;
+		let tier = '', capLvl = 6;
+		if (!fits(tg, '', 1.5)) tier = 'dense';
+		if (!fits(tg, 'dense', 1.5)) tier = 'micro';
+		if (tier === 'micro' && !fits(tg, 'micro', 0.3)) {
+			const minLvl = tg.reduce(function (m, t) { return Math.min(m, t.level); }, 6);
+			for (capLvl = 6; capLvl > minLvl; capLvl--) {
+				if (fits(tg.filter(t => t.level <= capLvl), 'micro', 0.3)) break;
+			}
+		}
+		this._railCapLvl = capLvl;
+		const vis = capLvl < 6 ? tg.filter(t => t.level <= capLvl) : tg;
 		this.railEl.classList.toggle('dense', tier === 'dense');
 		this.railEl.classList.toggle('micro', tier === 'micro');
-		let gap = (avail - n * dotH) / Math.max(1, n - 1);
+		const btns = this.railEl.querySelectorAll('button');
+		tg.forEach(function (t, i) { btns[i].classList.toggle('off', t.level > capLvl); });
+		let gap = vis.length > 1 ? (avail - sumH(vis, tier)) / (vis.length - 1) : 9;
 		if (gap > 9) gap = 9;
 		if (gap < 0) gap = 0;
 		this.railEl.style.gap = (Math.floor(gap * 10) / 10) + 'px';
@@ -1018,17 +1082,37 @@ class MuyunCompanionPlugin extends Plugin {
 			if (!previewEl) return;
 			const baseTop = previewEl.getBoundingClientRect().top;
 			const th = previewEl.clientHeight * 0.35;
-			/* 虚拟化渲染：DOM 标题是全表的一段连续窗口，双指针按（层级+文本）单调映射回下标 */
+			/* 虚拟化渲染：DOM 标题是全表的一段窗口，按（层级+文本）查预建索引回下标。
+			   重复标题消歧：以「像素占比估算的所在行」为主（步距无关，跨段跳转也准），
+			   滚动连续性（上次 cur）只做近似同分的微调；
+			   DOM 独有标题（callout 内标题，metadataCache 不收录）查不到自然跳过 */
 			const rendered = previewEl.querySelectorAll(HEADING_SEL);
-			const tg = this.railTargets;
-			let j = 0;
+			const idxMap = this._railIdx;
+			const tgts = this.railTargets;
+			const seed = typeof this._railPrevCur === 'number' ? this._railPrevCur : 0;
+			let totalLines = 0;
+			try { totalLines = view.editor.lastLine() + 1; } catch (e) { totalLines = 0; }
+			const scale = totalLines > 0 && previewEl.scrollHeight > 0
+				? previewEl.scrollHeight / totalLines : 0;
+			const pvTop = previewEl.getBoundingClientRect().top;
 			rendered.forEach(function (h) {
-				const lvl = +h.tagName[1];
-				const txt = (h.textContent || '').trim();
-				while (j < tg.length && !(tg[j].level === lvl && tg[j].text === txt)) j++;
-				if (j >= tg.length) return;
-				if (h.getBoundingClientRect().top - baseTop <= th) cur = j;
+				const list = idxMap.get(+h.tagName[1] + '¦' + (h.textContent || '').trim());
+				if (!list) return;
+				let best = list[0], bestScore = Infinity;
+				for (let k = 0; k < list.length; k++) {
+					const c = list[k];
+					let s;
+					if (scale > 0) {
+						const estLine = (h.getBoundingClientRect().top - pvTop + previewEl.scrollTop) / scale;
+						s = Math.abs(tgts[c].line - estLine) * 2 + Math.abs(c - seed) * 0.05;
+					} else {
+						s = Math.abs(c - seed);
+					}
+					if (s < bestScore) { bestScore = s; best = c; }
+				}
+				if (h.getBoundingClientRect().top - baseTop <= th) cur = best;
 			});
+			this._railPrevCur = cur;
 		} else {
 			try {
 				const ed = view.editor;
@@ -1056,14 +1140,18 @@ class MuyunCompanionPlugin extends Plugin {
 		}
 		const maxRead = this.railMaxRead;
 		const trail = this.settings.minimapTrail && view.getMode() === 'preview';
+		/* v0.8.6 超长大纲层级收缩后，当前标题的点 = 自 cur 向前最近的可见目标；
+		   标签文本仍显示真实当前标题（其层级被收缩时锚在最近的骨架点上） */
+		let vd = cur;
+		while (vd > 0 && dots[vd] && dots[vd].classList.contains('off')) vd--;
 		dots.forEach(function (b, i) {
-			b.classList.toggle('cur', i === cur);
-			b.classList.toggle('read', trail && i <= maxRead && i !== cur);
+			b.classList.toggle('cur', i === vd);
+			b.classList.toggle('read', trail && i <= maxRead && i !== vd);
 		});
 		/* v0.8.1 常显当前章节：无悬停时把标签钉在当前圆点旁（悬停优先，复用同一浮层） */
 		if (!this._railHover) {
 			if (this.settings.minimapLabel) {
-				this.showRailTip(dots[cur], 'H' + this.railTargets[cur].level + ' · ' + this.railTargets[cur].text, true);
+				this.showRailTip(dots[vd], 'H' + this.railTargets[cur].level + ' · ' + this.railTargets[cur].text, true);
 			} else if (this.railTip) {
 				this.showRailTip(null);
 			}
@@ -1080,12 +1168,17 @@ class MuyunCompanionPlugin extends Plugin {
 	scrollPreviewTo(view, t) {
 		const previewEl = view.contentEl.querySelector('.markdown-preview-view');
 		if (!previewEl) return;
+		/* 先播种消歧种子：跳转后的窗口以重复标题开头时也能绑对目标段 */
+		this._railPrevCur = typeof t.idx === 'number' ? t.idx : this._railPrevCur;
 		let total = 0;
 		try { total = view.editor.lastLine() + 1; } catch (e) { total = t.line + 1; }
 		const max = previewEl.scrollHeight - previewEl.clientHeight;
+		const target = Math.max(0, Math.min(max, t.line / Math.max(1, total) * previewEl.scrollHeight));
+		/* 虚拟化视图里长距离平滑滚动会被渲染中的高度补偿打断（实测目标 11393 只滚到 7067）——
+		   超过两屏改瞬移，短距离保留平滑 */
 		previewEl.scrollTo({
-			top: Math.max(0, Math.min(max, t.line / Math.max(1, total) * previewEl.scrollHeight)),
-			behavior: 'smooth'
+			top: target,
+			behavior: Math.abs(target - previewEl.scrollTop) > previewEl.clientHeight * 2 ? 'auto' : 'smooth'
 		});
 		/* 粗滚是平滑动画，中途按「最近同文」匹配会拽回半路上的重复标题——
 		   等 scrollend（动画真正结束）再精滚，900ms 兜底（已在目标位时不触发事件） */
@@ -1448,7 +1541,7 @@ class MuyunCompanionSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('侧缘小地图 · Edge minimap (H8)')
-			.setDesc('右缘标题点轨：阅读视图随滚动、实时预览随光标（滚出视野时随滚动）；点击圆点跳转。')
+			.setDesc('右缘标题点轨：阅读视图随滚动、实时预览随光标（滚出视野时随滚动）；点击圆点跳转；超长大纲自动收缩到上层标题（骨架常显，当前章节照常跟踪）。')
 			.addToggle(t => t.setValue(p.settings.minimap)
 				.onChange(async v => { p.settings.minimap = v; await p.saveSettings(); }));
 

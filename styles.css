@@ -44,11 +44,14 @@
 	border-radius: 50%;
 	border: 0;
 	padding: 0;
+	flex: 0 0 auto;
 	background: var(--text-muted, #999);
 	opacity: 0.35;
 	cursor: pointer;
 	transition: opacity 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
 }
+/* ── v0.8.6 超长大纲层级收缩：micro 也放不下时隐藏最深层级（off），骨架常显 ── */
+.muyun-rail-dot.off { display: none; }
 .muyun-rail-dot.lvl1 { width: 10px; height: 10px; }
 /* ── v0.8.3 密度分档：标题多时缩点径防溢出裁切（>40 dense / >80 micro） ── */
 .muyun-rail.dense .muyun-rail-dot { width: 5px; height: 5px; }
@@ -83,23 +86,24 @@
 	color: var(--text-normal, #ddd);
 	border: 1px solid var(--background-modifier-border, rgba(255, 255, 255, 0.1));
 	border-radius: 6px;
-	padding: 3px 9px;
+	padding: 3px 17px 3px 9px;
 	font-size: 11.5px;
 	pointer-events: none;
 	z-index: 20;
 	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
 	transition: top 0.12s ease;
 }
-/* ── v0.8.5 标签→圆点指向箭头：右缘小三角把标签锚到对应圆点 ── */
+/* ── v0.8.5 标签→圆点指向箭头：盒内右缘小三角（浮层 overflow:hidden 会裁掉盒外伪元素，
+   v0.8.5 首版箭头定位在盒外从未显示——v0.8.6 移入盒内，文本右让位） ── */
 .muyun-rail-tip::after {
 	content: "";
 	position: absolute;
 	top: 50%;
-	right: -7px;
+	right: 5px;
 	transform: translateY(-50%);
-	border: 5px solid transparent;
+	border: 4px solid transparent;
 	border-right: 0;
-	border-left: 7px solid var(--background-secondary, #20202a);
+	border-left: 5px solid var(--background-secondary, #20202a);
 	pointer-events: none;
 }
 /* ── v0.8.1 常显当前章节：比悬停预览收敛一档（半透明 + 模糊底 + 去投影） ── */
