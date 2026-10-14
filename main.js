@@ -1,6 +1,6 @@
 'use strict';
 
-/* MuYun Companion · v0.8.6
+/* MuYun Companion · v0.9.0
    MuYun 慕云主题的配套增强插件，承载主题（纯 CSS）无法实现的效果：
    H1 顶部阅读进度条（H2 章节刻度）/ H2 阅读聚光灯（默认关）/ H8 侧缘小地图点轨 /
    续读记忆 + 继续阅读队列 / 状态栏标题面包屑（可点击跳转）与剩余阅读时长 /
@@ -25,6 +25,9 @@
    v0.8.5：标签→圆点指向箭头（浮层右缘 7px 三角，常显/悬停两态同配），标签一眼锚定对应圆点。
    v0.8.6：CDP 长文复现两修——①metadataCache 未解析时不清轨（长文首开 cache 迟到曾把点轨整条清掉），
    并订阅 resolved 事件补刷新；②标题行内标记归一（加粗、行内代码、高亮、双链别名的原文与渲染文本不一致）。
+   v0.9.0：三件套——①已读标记（文件树已读笔记标题后 ✓，阈值可调，数据与队列/轨迹同源）；
+   ②队列深耕（搜索标题/路径、按文件夹分组、✓ 标记读完、行内累计时长）；
+   ③笔记删除/重命名跟随（store 与 stats.notes 键随重命名迁移、随删除清理，文件夹按前缀批处理）。
    样式走 Obsidian 标准 CSS 变量并带兜底值，任意主题可用，MuYun 下观感最佳。 */
 
 const { Plugin, PluginSettingTab, Setting, MarkdownView, Modal, Notice, debounce } = require('obsidian');
@@ -47,6 +50,8 @@ const DEFAULT_SETTINGS = {
 	spotlight: false,       /* H2 阅读聚光灯（观感争议项，默认关） */
 	spotlightDim: 0.35,     /* 聚光灯暗度 */
 	resumeReading: true,    /* 续读记忆 */
+	readMark: true,         /* v0.9 文件树已读标记 */
+	readMarkRatio: 0.95,    /* 已读阈值（阅读进度比例） */
 	breadcrumb: true,       /* 状态栏标题面包屑（v0.6 起各级可点击跳转） */
 	readTime: true,         /* 状态栏阅读时长估计（v0.6 起显示剩余） */
 	editorFocus: false,     /* 编辑态段落聚焦（写作聚光灯，默认关） */
@@ -126,35 +131,43 @@ class MuyunCompanionPlugin extends Plugin {
 			['切换折叠平滑展开', 'foldAnim']
 		];
 		toggles.forEach(pair => this.addCommand({
+			id: 'toggle-' + pair[1],
 			name: pair[0],
 			callback: () => this.toggle(pair[1])
 		}));
 
 		this.addCommand({
+			id: 'copy-section-link',
 			name: '复制当前小节链接 Copy link to current section',
 			callback: () => this.copyHeadingLink()
 		});
 		this.addCommand({
+			id: 'weekly-stats',
 			name: '查看本周阅读统计 Weekly reading stats',
 			callback: () => this.showWeeklyStats()
 		});
 		this.addCommand({
+			id: 'heatmap',
 			name: '查看阅读热图 Reading heatmap',
 			callback: () => new MuyunHeatmapModal(this.app, this).open()
 		});
 		this.addCommand({
+			id: 'clear-stats',
 			name: '清除阅读统计 Clear reading stats',
 			callback: () => this.clearStats()
 		});
 		this.addCommand({
+			id: 'reset-trail',
 			name: '重置当前笔记阅读轨迹 Reset read trail of current note',
 			callback: () => this.resetTrail()
 		});
 		this.addCommand({
+			id: 'queue',
 			name: '继续阅读 Continue reading',
 			callback: () => new MuyunQueueModal(this.app, this).open()
 		});
 		this.addCommand({
+			id: 'export-report',
 			name: '导出阅读周报 Export weekly report',
 			callback: () => this.exportWeeklyReport()
 		});
@@ -185,11 +198,31 @@ class MuyunCompanionPlugin extends Plugin {
 			this.refreshSoft();
 			this.computeReadTime();
 		}, 800, true)));
+
+		/* v0.9 笔记删除/重命名跟随：store 与 stats.notes 的键随重命名迁移、随删除清理。
+		   文件树在事件后会异步重绘并擦掉既有 ✓ 标记——统一延迟补画 */
+		this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
+			this.migratePaths(oldPath, file.path);
+			setTimeout(() => this.markReadFiles(), 500);
+		}));
+		this.registerEvent(this.app.vault.on('delete', file => {
+			this.migratePaths(file.path, null, true);
+			setTimeout(() => this.markReadFiles(), 500);
+		}));
+
+		/* v0.9 已读标记随文件树重绘补画（大库文件树虚拟化会回收屏幕外条目） */
+		this.register(() => {
+			if (this._markMo) this._markMo.disconnect();
+			document.querySelectorAll('.muyun-read-mark').forEach(el => el.remove());
+		});
 		this.registerDomEvent(window, 'resize', () => { this._spotCache = null; this.updateProgress(); this.renderBarTicks(); this.fitRailDensity(); });
 		this.registerDomEvent(document, 'scroll', () => this.onScroll(), { capture: true, passive: true });
 
 		this.refresh();
 		this.computeReadTime();
+		/* v0.9 启动补画：explorer 首帧与插件加载顺序不定，延迟两拍确保 ✓ 落上 */
+		setTimeout(() => this.markReadFiles(), 1200);
+		setTimeout(() => this.markReadFiles(), 3000);
 	}
 
 	onunload() {
@@ -309,6 +342,7 @@ class MuyunCompanionPlugin extends Plugin {
 		this.buildRail();
 		this.applySpotlight();
 		this.updateBreadcrumb();
+		this.markReadFiles();
 	}
 
 	refreshSoft() {
@@ -1242,6 +1276,94 @@ class MuyunCompanionPlugin extends Plugin {
 		while (keys.length > STORE_MAX) delete this.store[keys.shift()];
 	}
 
+	/* ═══ v0.9 笔记删除/重命名跟随：store 与 stats.notes 的键随重命名迁移、随删除清理。
+	   文件夹事件 Obsidian 只对文件夹本身发一次，子路径按前缀批处理 ═══ */
+	migratePaths(oldPath, newPath, isDelete) {
+		if (!oldPath) return;
+		const pre = oldPath.endsWith('/') ? oldPath : oldPath + '/';
+		let touched = false;
+		const move = map => {
+			if (!map) return;
+			Object.keys(map).forEach(k => {
+				let hit = false, nk = null;
+				if (k === oldPath) { hit = true; nk = isDelete ? null : newPath; }
+				else if (k.startsWith(pre)) { hit = true; nk = isDelete ? null : newPath + k.slice(oldPath.length); }
+				if (!hit) return;   /* 与本次事件无关的键原样保留（文件夹事件后还有子文件事件，勿误删） */
+				if (nk === null) { delete map[k]; touched = true; }
+				else if (nk !== k) { map[nk] = map[k]; delete map[k]; touched = true; }
+			});
+		};
+		move(this.store);
+		move(this.stats && this.stats.notes);
+		if (touched) {
+			this.saveStoreSoon();
+			this.markReadFiles();
+		}
+	}
+
+	/* ═══ v0.9 已读标记：文件树已读笔记标题后加 ✓（读完 = 阅读进度达阈值或队列手动标记）。
+	   以 DOM 层级遍历重建 路径→inner 映射——fileItems 在重命名后会滞留脱离节点（1.14 实测），
+	   不可靠；幂等补画（dataset 记状态，未变化不动 DOM），大库虚拟化重绘由 MutationObserver 去抖补画 ═══ */
+	markReadFiles() {
+		const leaves = this.app.workspace.getLeavesOfType('file-explorer');
+		if (!leaves.length) return;
+		const on = this.settings.readMark;
+		const th = this.settings.readMarkRatio;
+		const self = this;
+		const apply = (prefix, inner) => {
+			/* explorer 重绘只清子节点、保留同一 inner——dataset 会与 DOM 脱钩，
+			   去重改看标记 span 的实存状态；名称解析剔除标记内容 */
+			const clone = inner.cloneNode(true);
+			const extra = clone.querySelector('.muyun-read-mark');
+			if (extra) extra.remove();
+			const name = (clone.textContent || '').trim();
+			const cand = prefix + name;
+			const key = self.store[cand] ? cand : (self.store[cand + '.md'] ? cand + '.md' : null);
+			const rec = key ? self.store[key] : null;
+			const done = !!(rec && (rec.done || (rec.ratio != null && rec.ratio >= th)));
+			const has = !!inner.querySelector(':scope > .muyun-read-mark');
+			if (has === !!(on && done)) return;
+			if (has) inner.querySelector(':scope > .muyun-read-mark').remove();
+			if (on && done) {
+				const s = document.createElement('span');
+				s.className = 'muyun-read-mark';
+				s.textContent = ' ✓';
+				inner.appendChild(s);
+			}
+		};
+		const walk = (parent) => {
+			/* 路径向上重建：容器与条目间有无名包裹层，不能按 :scope 直接子代遍历 */
+			parent.querySelectorAll('.tree-item.nav-file').forEach(t => {
+				const inner = t.querySelector(':scope > .tree-item-self > .tree-item-inner');
+				if (!inner) return;
+				const parts = [];
+				let p = t.parentElement;
+				while (p && p !== parent) {
+					const folderItem = p.closest('.tree-item');
+					if (!folderItem) break;
+					const fi = folderItem.querySelector(':scope > .tree-item-self > .tree-item-inner');
+					if (fi) parts.unshift(fi.textContent.trim());
+					p = folderItem.parentElement;
+				}
+				apply(parts.join('/') + (parts.length ? '/' : ''), inner);
+			});
+		};
+		leaves.forEach(leaf => {
+			const view = leaf.view;
+			if (!view || !view.containerEl) return;
+			self.ensureMarkObserver(view);
+			const root = view.containerEl.querySelector('.nav-files-container') || view.containerEl;
+			walk(root);
+		});
+	}
+
+	ensureMarkObserver(view) {
+		if (this._markMo) return;
+		const self = this;
+		this._markMo = new MutationObserver(debounce(function () { self.markReadFiles(); }, 400, true));
+		this._markMo.observe(view.containerEl, { childList: true, subtree: true });
+	}
+
 	saveCurrentPosSoon() {
 		clearTimeout(this._posT);
 		this._posT = setTimeout(() => this.saveCurrentPos(), 600);
@@ -1564,6 +1686,20 @@ class MuyunCompanionSettingTab extends PluginSettingTab {
 				.onChange(async v => { p.settings.resumeReading = v; await p.saveSettings(); }));
 
 		new Setting(containerEl)
+			.setName('已读标记 · Read marks')
+			.setDesc('文件树中已读笔记的标题后显示 ✓（读完 = 阅读进度达到阈值，或在队列中手动标记）。')
+			.addToggle(t => t.setValue(p.settings.readMark)
+				.onChange(async v => { p.settings.readMark = v; await p.saveSettings(); p.markReadFiles(); }));
+
+		new Setting(containerEl)
+			.setName('已读阈值 · Read threshold')
+			.setDesc('阅读进度达到该比例即视为已读。')
+			.addSlider(s => s.setLimits(0.5, 1, 0.05)
+				.setValue(p.settings.readMarkRatio)
+				.setDynamicTooltip()
+				.onChange(async v => { p.settings.readMarkRatio = v; await p.saveSettings(); p.markReadFiles(); }));
+
+		new Setting(containerEl)
 			.setName('标题面包屑 · Breadcrumb')
 			.setDesc('状态栏显示「章 › 节 › 小节」当前路径，随滚动更新；点击任意一级可跳回该章节。')
 			.addToggle(t => t.setValue(p.settings.breadcrumb)
@@ -1731,71 +1867,132 @@ class MuyunHeatmapModal extends Modal {
 }
 
 /* ── v0.7 ① 继续阅读队列 Modal（D1：命令 + 状态栏 📖 双入口，无 ribbon） ── */
+/* ═══ v0.7 继续阅读队列；v0.9 深耕：搜索标题/路径、按文件夹分组、✓ 标记读完、行内累计时长 ═══ */
 class MuyunQueueModal extends Modal {
 	constructor(app, plugin) {
 		super(app);
 		this.plugin = plugin;
+		this.q = { search: '', group: false };
 	}
 
-	onOpen() { this.render(); }
-
-	render() {
+	onOpen() {
 		const { contentEl } = this;
-		const p = this.plugin;
 		contentEl.empty();
 		contentEl.addClass('muyun-queue');
 		contentEl.createEl('h3', { text: '继续阅读 · Continue reading' });
-		contentEl.createEl('p', { text: '点击打开 · Ctrl+点击新窗格 · 📌 置顶 · ✕ 移出' }).addClass('muyun-queue-sub');
+		const search = contentEl.createEl('input', { cls: 'muyun-q-search', type: 'search' });
+		search.placeholder = '搜索标题 / 路径 · search title or path';
+		search.addEventListener('input', () => {
+			this.q.search = search.value.trim().toLowerCase();
+			this.renderList();
+		});
+		const tools = contentEl.createDiv('muyun-q-tools');
+		const gbtn = tools.createEl('button', { cls: 'muyun-q-gbtn' + (this.q.group ? ' on' : '') });
+		gbtn.textContent = '按文件夹分组';
+		gbtn.setAttribute('aria-pressed', this.q.group ? 'true' : 'false');
+		gbtn.addEventListener('click', () => {
+			this.q.group = !this.q.group;
+			gbtn.classList.toggle('on', this.q.group);
+			gbtn.setAttribute('aria-pressed', this.q.group ? 'true' : 'false');
+			this.renderList();
+		});
+		tools.createSpan({ text: '点击打开 · Ctrl+点击新窗格 · 📌 置顶 · ✓ 读完 · ✕ 移出' }).addClass('muyun-queue-sub');
+		this.listEl = contentEl.createDiv('muyun-q-list');
+		this.renderList();
+	}
 
-		/* v0.8：置顶优先，其余按最近阅读时间倒序 */
-		const items = Object.keys(p.store)
+	baseItems() {
+		const p = this.plugin;
+		let items = Object.keys(p.store)
 			.map(function (k) { return { path: k, rec: p.store[k] }; })
-			.filter(function (it) { return it.rec.ts && it.rec.ratio != null && !(it.rec.done && it.rec.ratio > 0.97); })
-			.sort(function (a, b) {
-				const pa = a.rec.pin ? 1 : 0, pb = b.rec.pin ? 1 : 0;
-				if (pa !== pb) return pb - pa;
-				return b.rec.ts - a.rec.ts;
-			})
-			.slice(0, 20);
+			.filter(function (it) { return it.rec.ts && it.rec.ratio != null && !(it.rec.done && it.rec.ratio > 0.97); });
+		const s = this.q.search;
+		if (s) items = items.filter(function (it) { return it.path.toLowerCase().includes(s); });
+		items.sort(function (a, b) {
+			const pa = a.rec.pin ? 1 : 0, pb = b.rec.pin ? 1 : 0;
+			if (pa !== pb) return pb - pa;
+			return b.rec.ts - a.rec.ts;
+		});
+		return items.slice(0, s ? 50 : 20);
+	}
 
+	renderList() {
+		this.listEl.empty();
+		const items = this.baseItems();
 		if (!items.length) {
-			contentEl.createEl('p', { text: '最近没有在读的笔记' }).addClass('muyun-queue-empty');
+			this.listEl.createEl('p', { text: this.q.search ? '没有匹配的笔记' : '最近没有在读的笔记' }).addClass('muyun-queue-empty');
 			return;
 		}
+		let groups = [{ dir: null, items: items }];
+		if (this.q.group) {
+			const map = new Map();
+			items.forEach(it => {
+				const dir = it.path.includes('/') ? it.path.slice(0, it.path.lastIndexOf('/')) : '/';
+				if (!map.has(dir)) map.set(dir, []);
+				map.get(dir).push(it);
+			});
+			groups = [];
+			map.forEach((arr, dir) => groups.push({ dir: dir, items: arr }));
+		}
+		groups.forEach(g => {
+			if (g.dir !== null) {
+				const h = this.listEl.createDiv('muyun-q-ghead');
+				const label = g.dir === '/' ? '（根目录） · /' : g.dir.split('/').pop() + ' · ' + g.dir;
+				h.createSpan({ text: label });
+				h.createSpan({ text: String(g.items.length) }).addClass('muyun-q-gcount');
+			}
+			g.items.forEach(it => this.renderRow(it));
+		});
+	}
 
-		items.forEach(it => {
-			const row = contentEl.createDiv('muyun-q-row');
-			row.setAttribute('title', it.path + '\n点击打开 · Ctrl+点击新窗格打开');
-			const nm = row.createDiv('muyun-q-name');
-			nm.createSpan({ text: (it.rec.pin ? '📌 ' : '') + it.path.split('/').pop().replace(/\.md$/i, '') });
-			nm.createDiv({ text: it.rec.crumb ? '⌁ ' + it.rec.crumb : it.path }).addClass('muyun-q-path');
-			const pct = Math.round((it.rec.ratio || 0) * 100);
-			const bar = row.createDiv('muyun-q-bar');
-			bar.createDiv('muyun-q-fill').style.width = pct + '%';
-			row.createDiv({ text: pct + '%' }).addClass('muyun-q-pct');
-			row.createDiv({ text: p.relTime(it.rec.ts) }).addClass('muyun-q-time');
-			const pin = row.createEl('button', { cls: 'muyun-q-pin' + (it.rec.pin ? ' on' : '') });
-			pin.textContent = '📌';
-			pin.setAttribute('aria-label', it.rec.pin ? '取消置顶' : '置顶');
-			pin.addEventListener('click', e => {
-				e.stopPropagation();
-				it.rec.pin = !it.rec.pin;
-				p.saveStoreSoon();
-				this.render();
-			});
-			const x = row.createEl('button', { cls: 'muyun-q-x' });
-			x.textContent = '✕';
-			x.setAttribute('aria-label', '移出队列');
-			x.addEventListener('click', e => {
-				e.stopPropagation();
-				delete p.store[it.path];
-				p.saveStoreSoon();
-				this.render();
-			});
-			row.addEventListener('click', ev => {
-				this.close();
-				p.app.workspace.openLinkText(it.path, '', !!(ev.ctrlKey || ev.metaKey));
-			});
+	renderRow(it) {
+		const p = this.plugin;
+		const row = this.listEl.createDiv('muyun-q-row');
+		row.setAttribute('title', it.path + '\n点击打开 · Ctrl+点击新窗格打开');
+		const nm = row.createDiv('muyun-q-name');
+		nm.createSpan({ text: (it.rec.pin ? '📌 ' : '') + it.path.split('/').pop().replace(/\.md$/i, '') });
+		const cum = (p.stats.notes[it.path] || {}).sec || 0;
+		const sub = it.rec.crumb ? '⌁ ' + it.rec.crumb : it.path;
+		nm.createDiv({ text: (cum > 0 ? '⏱ ' + p.fmtShortDur(cum) + ' · ' : '') + sub }).addClass('muyun-q-path');
+		const pct = Math.round((it.rec.ratio || 0) * 100);
+		const bar = row.createDiv('muyun-q-bar');
+		bar.createDiv('muyun-q-fill').style.width = pct + '%';
+		row.createDiv({ text: pct + '%' }).addClass('muyun-q-pct');
+		row.createDiv({ text: p.relTime(it.rec.ts) }).addClass('muyun-q-time');
+		const fin = row.createEl('button', { cls: 'muyun-q-fin' });
+		fin.textContent = '✓';
+		fin.setAttribute('aria-label', '标记读完（文件树加 ✓，移出队列）');
+		fin.addEventListener('click', e => {
+			e.stopPropagation();
+			it.rec.done = true;
+			it.rec.ratio = Math.max(it.rec.ratio || 0, 1);
+			it.rec.ts = Date.now();
+			p.saveStoreSoon();
+			p.markReadFiles();
+			this.renderList();
+		});
+		const pin = row.createEl('button', { cls: 'muyun-q-pin' + (it.rec.pin ? ' on' : '') });
+		pin.textContent = '📌';
+		pin.setAttribute('aria-label', it.rec.pin ? '取消置顶' : '置顶');
+		pin.addEventListener('click', e => {
+			e.stopPropagation();
+			it.rec.pin = !it.rec.pin;
+			p.saveStoreSoon();
+			this.renderList();
+		});
+		const x = row.createEl('button', { cls: 'muyun-q-x' });
+		x.textContent = '✕';
+		x.setAttribute('aria-label', '移出队列');
+		x.addEventListener('click', e => {
+			e.stopPropagation();
+			delete p.store[it.path];
+			p.saveStoreSoon();
+			p.markReadFiles();
+			this.renderList();
+		});
+		row.addEventListener('click', ev => {
+			this.close();
+			p.app.workspace.openLinkText(it.path, '', !!(ev.ctrlKey || ev.metaKey));
 		});
 	}
 
